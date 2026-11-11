@@ -1,0 +1,90 @@
+<mxfile host="app.diagrams.net" modified="2026-11-11T12:00:00.000Z" agent="Mozilla/5.0" version="26.0.16">
+  <diagram id="diag-electrical-v3" name="Plano Eléctrico U3-U4 (V3.0)"><mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- 1. Cajetín y Marco: Líneas de 1px con strokeColor=#000000 y strokeWidth=0 (Hairline CAD) -->
+        <mxCell id="frame-top" value="" style="strokeColor=#000000;strokeWidth=0;fillColor=none;html=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="1080" height="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="frame-bottom" value="" style="strokeColor=#000000;strokeWidth=0;fillColor=none;html=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="780" width="1080" height="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="frame-divider-v" value="" style="strokeColor=#000000;strokeWidth=0;fillColor=none;html=0;" vertex="1" parent="1">
+          <mxGeometry x="580" y="40" width="1" height="740" as="geometry"/>
+        </mxCell>
+
+        <!-- 2. Título de Cajetín con font-size: 1px externo, font-size real de 26.25px y strokeColor=none (Sin borde fantasma) -->
+        <UserObject id="title-block" label="ADRV GEN BOX B0-B5 JARMS&#10;">
+          <mxCell style="text=1;html=0;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;strokeColor=none;fillColor=none;fontSize=26.25;fontColor=#000000;fontFamily=Calibri;" vertex="1" parent="1" id="title-block" value="ADRV GEN BOX B0-B5 JARMS&#10;">
+            <mxGeometry x="50" y="50" width="450" height="40" as="geometry"/>
+          </mxCell>
+        </UserObject>
+
+        <!-- 3. Logo/Imagen Base64 Incrustada SIN ';base64' (data:image/png,<base64>) -->
+        <mxCell id="logo-cajetin" value="" style="vsdxID=221;fillColor=none;gradientColor=none;image=data:image/png,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==;aspect=fixed;strokeColor=none;html=0;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="50" width="100" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- 4. Placa Electrónica U3 (Nivel 1 de jerarquía) -->
+        <UserObject id="U3" label="PLACA DE CONTROL U3&#10;">
+          <mxCell style="rounded;whiteSpace=wrap;html=0;fillColor=#dae8fc;strokeColor=#4672c4;strokeWidth=2;verticalAlign=top;spacingTop=10;fontSize=17.50;fontFamily=Arial;" vertex="1" parent="1" id="U3" value="PLACA DE CONTROL U3&#10;">
+            <mxGeometry x="80" y="140" width="400" height="320" as="geometry"/>
+          </mxCell>
+        </UserObject>
+
+        <!-- 5. Bloque Conector J1 (Nivel 2 de jerarquía, anidado en U3) -->
+        <UserObject id="CONN_J1" label="CONECTOR J1&#10;">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#ffffff;strokeColor=#666666;strokeWidth=1.5;fontSize=11.29;fontColor=#000000;" vertex="1" parent="U3" id="CONN_J1" value="CONECTOR J1&#10;">
+            <mxGeometry x="240" y="60" width="130" height="180" as="geometry"/>
+          </mxCell>
+        </UserObject>
+
+        <!-- 6. Pin 1 (Nivel 3 de jerarquía, anidado en CONN_J1) con rotación=90 (sin swap de width/height) -->
+        <UserObject id="PIN_1" label="PIN 1 (VCC)&#10;">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#c00000;strokeColor=#000000;rotation=90;spacingTop=0;spacingBottom=0;spacingLeft=0;spacingRight=0;fontSize=8.47;fontColor=#FFFFFF;" vertex="1" parent="CONN_J1" id="PIN_1" value="PIN 1 (VCC)&#10;">
+            <mxGeometry x="20" y="30" width="80" height="15" as="geometry"/>
+          </mxCell>
+        </UserObject>
+
+        <!-- 7. Pin 2 (Nivel 3 de jerarquía, anidado en CONN_J1) -->
+        <UserObject id="PIN_2" label="PIN 2 (GND)&#10;">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#d9d9d9;strokeColor=#000000;strokeWidth=1;fontSize=8.47;fontColor=#000000;" vertex="1" parent="CONN_J1" id="PIN_2" value="PIN 2 (GND)&#10;">
+            <mxGeometry x="20" y="110" width="80" height="15" as="geometry"/>
+          </mxCell>
+        </UserObject>
+
+        <!-- 8. Placa Electrónica U4 (Nivel 1 de jerarquía) -->
+        <UserObject id="U4" label="MÓDULO DE POTENCIA U4&#10;">
+          <mxCell style="rounded;whiteSpace=wrap;html=0;fillColor=#d5e8d4;strokeColor=#00b050;strokeWidth=2;verticalAlign=top;spacingTop=10;fontSize=17.50;fontFamily=Arial;" vertex="1" parent="1" id="U4" value="MÓDULO DE POTENCIA U4&#10;">
+            <mxGeometry x="680" y="140" width="400" height="320" as="geometry"/>
+          </mxCell>
+        </UserObject>
+
+        <!-- 9. Conector J2 en U4 -->
+        <UserObject id="CONN_J2" label="CONECTOR J2&#10;">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#ffffff;strokeColor=#666666;strokeWidth=1.5;fontSize=11.29;fontColor=#000000;" vertex="1" parent="U4" id="CONN_J2" value="CONECTOR J2&#10;">
+            <mxGeometry x="30" y="60" width="130" height="180" as="geometry"/>
+          </mxCell>
+        </UserObject>
+
+        <!-- 10. Pin 3 en CONN_J2 (Nivel 3) con fondo negro y texto blanco rescatado -->
+        <UserObject id="PIN_3" label="PIN 1 (PWR_IN)&#10;">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#000000;strokeColor=#000000;fontSize=8.47;fontColor=#FFFFFF;" vertex="1" parent="CONN_J2" id="PIN_3" value="PIN 1 (PWR_IN)&#10;">
+            <mxGeometry x="20" y="30" width="80" height="15" as="geometry"/>
+          </mxCell>
+        </UserObject>
+
+        <!-- 11. Conector Ortogonal 2D con Codos (<Array as="points">) entre PIN_1 y PIN_3 -->
+        <mxCell id="wire-power" value="24V DC POWER" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=0;strokeColor=#c00000;strokeWidth=2;dashed;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="PIN_1" target="PIN_3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="550" y="240"/>
+              <mxPoint x="640" y="240"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel></diagram>
+</mxfile>
