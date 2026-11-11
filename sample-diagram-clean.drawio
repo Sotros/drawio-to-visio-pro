@@ -16,8 +16,8 @@
         </mxCell>
 
         <!-- 2. Título de Cajetín con font-size: 1px externo, font-size real de 26.25px y strokeColor=none (Sin borde fantasma) -->
-        <UserObject id="title-block" label="ADRV GEN BOX B0-B5 JARMS&#10;">
-          <mxCell style="text=1;html=0;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;strokeColor=none;fillColor=none;fontSize=26.25;fontColor=#000000;fontFamily=Calibri;" vertex="1" parent="1" id="title-block" value="ADRV GEN BOX B0-B5 JARMS&#10;">
+        <UserObject id="title-block" label="ADRV GEN BOX B0-B5 JARMS">
+          <mxCell style="text=1;html=0;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;strokeColor=none;fillColor=none;fontSize=26.25;fontColor=#000000;fontFamily=Calibri;fontStyle=1;" vertex="1" parent="1" id="title-block" value="ADRV GEN BOX B0-B5 JARMS">
             <mxGeometry x="50" y="50" width="450" height="40" as="geometry"/>
           </mxCell>
         </UserObject>
@@ -28,50 +28,50 @@
         </mxCell>
 
         <!-- 4. Placa Electrónica U3 (Nivel 1 de jerarquía) -->
-        <UserObject id="U3" label="PLACA DE CONTROL U3&#10;">
-          <mxCell style="rounded;whiteSpace=wrap;html=0;fillColor=#dae8fc;strokeColor=#4672c4;strokeWidth=2;verticalAlign=top;spacingTop=10;fontSize=17.50;fontFamily=Arial;" vertex="1" parent="1" id="U3" value="PLACA DE CONTROL U3&#10;">
+        <UserObject id="U3" label="PLACA DE CONTROL U3">
+          <mxCell style="rounded;whiteSpace=wrap;html=0;fillColor=#dae8fc;strokeColor=#4672c4;strokeWidth=2;verticalAlign=top;spacingTop=10;fontSize=17.5;fontFamily=Arial;fontStyle=1;" vertex="1" parent="1" id="U3" value="PLACA DE CONTROL U3">
             <mxGeometry x="80" y="140" width="400" height="320" as="geometry"/>
           </mxCell>
         </UserObject>
 
         <!-- 5. Bloque Conector J1 (Nivel 2 de jerarquía, anidado en U3) -->
-        <UserObject id="CONN_J1" label="CONECTOR J1&#10;">
-          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#ffffff;strokeColor=#666666;strokeWidth=1.5;fontSize=11.29;fontColor=#000000;" vertex="1" parent="U3" id="CONN_J1" value="CONECTOR J1&#10;">
+        <UserObject id="CONN_J1" label="CONECTOR J1">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#ffffff;strokeColor=#666666;strokeWidth=1.5;fontSize=11.29;fontColor=#000000;" vertex="1" parent="U3" id="CONN_J1" value="CONECTOR J1">
             <mxGeometry x="240" y="60" width="130" height="180" as="geometry"/>
           </mxCell>
         </UserObject>
 
         <!-- 6. Pin 1 (Nivel 3 de jerarquía, anidado en CONN_J1) con rotación=90 (sin swap de width/height) -->
-        <UserObject id="PIN_1" label="PIN 1 (VCC)&#10;">
-          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#c00000;strokeColor=#000000;rotation=90;spacingTop=0;spacingBottom=0;spacingLeft=0;spacingRight=0;fontSize=8.47;fontColor=#FFFFFF;" vertex="1" parent="CONN_J1" id="PIN_1" value="PIN 1 (VCC)&#10;">
+        <UserObject id="PIN_1" label="PIN 1 (VCC)">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#c00000;strokeColor=#000000;rotation=90;spacingTop=0;spacingBottom=0;spacingLeft=0;spacingRight=0;fontSize=8.47;fontColor=#FFFFFF;" vertex="1" parent="CONN_J1" id="PIN_1" value="PIN 1 (VCC)">
             <mxGeometry x="20" y="30" width="80" height="15" as="geometry"/>
           </mxCell>
         </UserObject>
 
         <!-- 7. Pin 2 (Nivel 3 de jerarquía, anidado en CONN_J1) -->
-        <UserObject id="PIN_2" label="PIN 2 (GND)&#10;">
-          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#d9d9d9;strokeColor=#000000;strokeWidth=1;fontSize=8.47;fontColor=#000000;" vertex="1" parent="CONN_J1" id="PIN_2" value="PIN 2 (GND)&#10;">
+        <UserObject id="PIN_2" label="PIN 2 (GND)">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#d9d9d9;strokeColor=#000000;strokeWidth=1;fontSize=8.47;fontColor=#000000;" vertex="1" parent="CONN_J1" id="PIN_2" value="PIN 2 (GND)">
             <mxGeometry x="20" y="110" width="80" height="15" as="geometry"/>
           </mxCell>
         </UserObject>
 
         <!-- 8. Placa Electrónica U4 (Nivel 1 de jerarquía) -->
-        <UserObject id="U4" label="MÓDULO DE POTENCIA U4&#10;">
-          <mxCell style="rounded;whiteSpace=wrap;html=0;fillColor=#d5e8d4;strokeColor=#00b050;strokeWidth=2;verticalAlign=top;spacingTop=10;fontSize=17.50;fontFamily=Arial;" vertex="1" parent="1" id="U4" value="MÓDULO DE POTENCIA U4&#10;">
+        <UserObject id="U4" label="MÓDULO DE POTENCIA U4">
+          <mxCell style="rounded;whiteSpace=wrap;html=0;fillColor=#d5e8d4;strokeColor=#00b050;strokeWidth=2;verticalAlign=top;spacingTop=10;fontSize=17.5;fontFamily=Arial;fontStyle=1;" vertex="1" parent="1" id="U4" value="MÓDULO DE POTENCIA U4">
             <mxGeometry x="680" y="140" width="400" height="320" as="geometry"/>
           </mxCell>
         </UserObject>
 
         <!-- 9. Conector J2 en U4 -->
-        <UserObject id="CONN_J2" label="CONECTOR J2&#10;">
-          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#ffffff;strokeColor=#666666;strokeWidth=1.5;fontSize=11.29;fontColor=#000000;" vertex="1" parent="U4" id="CONN_J2" value="CONECTOR J2&#10;">
+        <UserObject id="CONN_J2" label="CONECTOR J2">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#ffffff;strokeColor=#666666;strokeWidth=1.5;fontSize=11.29;fontColor=#000000;" vertex="1" parent="U4" id="CONN_J2" value="CONECTOR J2">
             <mxGeometry x="30" y="60" width="130" height="180" as="geometry"/>
           </mxCell>
         </UserObject>
 
         <!-- 10. Pin 3 en CONN_J2 (Nivel 3) con fondo negro y texto blanco rescatado -->
-        <UserObject id="PIN_3" label="PIN 1 (PWR_IN)&#10;">
-          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#000000;strokeColor=#000000;fontSize=8.47;fontColor=#FFFFFF;" vertex="1" parent="CONN_J2" id="PIN_3" value="PIN 1 (PWR_IN)&#10;">
+        <UserObject id="PIN_3" label="PIN 1 (PWR_IN)">
+          <mxCell style="rounded=0;whiteSpace=wrap;html=0;fillColor=#000000;strokeColor=#000000;fontSize=8.47;fontColor=#FFFFFF;" vertex="1" parent="CONN_J2" id="PIN_3" value="PIN 1 (PWR_IN)">
             <mxGeometry x="20" y="30" width="80" height="15" as="geometry"/>
           </mxCell>
         </UserObject>

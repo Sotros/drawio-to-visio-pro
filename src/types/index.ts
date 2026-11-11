@@ -38,9 +38,12 @@ export interface DiagnosticReport {
   fileName: string;
   fileType: 'drawio' | 'vsdx' | 'xml';
   pagesCount: number;
+  pagesDecompressed?: number;
   userObjectsResolved: number;
   htmlStylesRescued: number;
   htmlTagsRemoved: number;
+  trailingNewlinesRemoved?: number;
+  negativeMarginsCleared?: number;
   shapesCount: number;
   connectorsCount: number;
   orthogonalConnectorsCount: number;
@@ -49,6 +52,8 @@ export interface DiagnosticReport {
   ghostBordersCleared: number;
   hairlinesPreserved: number;
   textBlocksFixed: number;
+  shapesSkipped1D?: number;
+  invalidSectionsRemoved?: number;
   nestedResolvedCount: number;
   warnings: string[];
   logs: string[];
@@ -60,13 +65,14 @@ export interface DiagnosticReport {
 
 export interface ProcessedFileItem {
   id: string;
-  file: File;
+  file?: File;
   name: string;
   size: number;
   type: 'drawio' | 'vsdx' | 'xml';
   status: 'pending' | 'processing' | 'success' | 'error';
   report?: DiagnosticReport;
   cleanDrawioBlob?: Blob;
+  cleanDrawioXml?: string;
   vsdxBlob?: Blob;
   error?: string;
 }

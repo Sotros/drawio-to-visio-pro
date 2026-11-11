@@ -10,8 +10,7 @@ import {
 } from './xmlUtils';
 
 /**
- * Helper to get a cell in an XML element.
- * Checks direct children or inside sections/rows.
+ * Retrieves a Cell inside an element by checking direct children or nested rows.
  */
 function getCell(element: Element, cellName: string): Element | null {
   // Direct child cell
@@ -39,34 +38,68 @@ function getCell(element: Element, cellName: string): Element | null {
 }
 
 /**
- * Ensures or updates a Cell inside a parent XML node.
+ * Sets or updates a direct child <Cell> inside <Shape>.
+ * STRICT XSD RULE: In Visio OpenXML Schema, ALL direct child <Cell> elements
+ * MUST appear BEFORE any <Section>, <Text>, <ForeignData>, or <Shapes> elements.
+ * Inserting a <Cell> after <Text> or <Section> causes Visio to discard the page (blank page).
  */
-function setOrUpdateCell(
+function setOrUpdateDirectShapeCell(
   doc: Document,
-  parent: Element,
+  shape: Element,
   name: string,
   val: string,
-  formula?: string
+  formula?: string,
+  unit?: string
 ): Element {
-  const directCells = getDirectChildrenByTag(parent, 'Cell');
+  const directCells = getDirectChildrenByTag(shape, 'Cell');
   let cell = directCells.find(c => c.getAttribute('N') === name);
 
-  if (!cell) {
-    cell = doc.createElement('Cell');
+  if (cell) {
+    cell.setAttribute('V', val);
+    if (formula !== undefined) {
+      cell.setAttribute('F', formula);
+    }
+    if (unit !== undefined) {
+      cell.setAttribute('U', unit);
+    }
+  } else {
+    const ns = shape.namespaceURI || 'http://schemas.microsoft.com/office/visio/2012/main';
+    cell = doc.createElementNS(ns, 'Cell');
     cell.setAttribute('N', name);
-    parent.appendChild(cell);
+    cell.setAttribute('V', val);
+    if (formula !== undefined) {
+      cell.setAttribute('F', formula);
+    }
+    if (unit !== undefined) {
+      cell.setAttribute('U', unit);
+    }
+
+    // STRICT XSD ORDER: Insert BEFORE the first child node that is not a <Cell>
+    const children = Array.from(shape.childNodes);
+    const firstNonCell = children.find(
+      n => n.nodeType === 1 && (n as Element).tagName.toLowerCase() !== 'cell'
+    );
+
+    if (firstNonCell) {
+      shape.insertBefore(cell, firstNonCell);
+    } else {
+      shape.appendChild(cell);
+    }
   }
 
-  cell.setAttribute('V', val);
-  if (formula !== undefined) {
-    cell.setAttribute('F', formula);
-  }
   return cell;
 }
 
 /**
- * Patches a Visio .vsdx package in-place using JSZip.
- * Fixes misaligned text blocks, text wrapping, edit locks, and font sizes.
+ * Surgical VSDX Patcher - Architecture V4.0
+ * Corrects misaligned text boxes and margins without EVER breaking Visio's XSD schema.
+ *
+ * 5 GOLDEN RULES IMPLEMENTED:
+ * 1) Only visio/pages/page*.xml are touched; all other ZIP entries remain intact.
+ * 2) Strict 'application/xml' DOM parsing and validation.
+ * 3) NEVER create <Section N="TextXForm"> or <Section N="TextBlock"> (they don't exist in Visio XSD).
+ * 4) All direct child <Cell> elements MUST precede <Section>, <Text>, <ForeignData>, <Shapes>.
+ * 5) 1D connectors (BeginX / EndX) are strictly skipped.
  */
 export async function patchVsdx(
   vsdxData: ArrayBuffer | Uint8Array | Blob,
@@ -80,10 +113,12 @@ export async function patchVsdx(
   let totalPages = 0;
   let totalShapes = 0;
   let textBlocksFixed = 0;
+  let shapesSkipped1D = 0;
+  let invalidSectionsRemoved = 0;
   const logs: string[] = [];
   const warnings: string[] = [];
 
-  // Find all page XML files in visio/pages/page*.xml
+  // Find all page XML files: visio/pages/page*.xml
   const pageFiles: string[] = [];
   zip.forEach((relativePath) => {
     if (/^visio\/pages\/page\d+\.xml$/i.test(relativePath)) {
@@ -100,7 +135,7 @@ export async function patchVsdx(
   }
 
   totalPages = pageFiles.length;
-  logs.push(`Encontradas ${totalPages} página(s) en el archivo .vsdx.`);
+  logs.push(`Encontradas ${totalPages} página(s) para parcheo quirúrgico en el paquete .vsdx.`);
 
   for (const pagePath of pageFiles) {
     const pageXmlText = await zip.file(pagePath)!.async('string');
@@ -116,113 +151,124 @@ export async function patchVsdx(
     totalShapes += shapes.length;
 
     for (const shape of shapes) {
-      const hasText = !!findFirstElementByTag(shape, 'Text');
-      if (!hasText) {
+      // Rule 3: Clean up any illegal sections (<Section N="TextXForm">, <Section N="TextBlock">, <Section N="Text">, <Section N="Protection">) on ALL shapes
+      const directSections = getDirectChildrenByTag(shape, 'Section');
+      for (const sec of directSections) {
+        const secName = sec.getAttribute('N');
+        if (secName === 'TextXForm' || secName === 'TextBlock' || secName === 'Text' || secName === 'Protection') {
+          shape.removeChild(sec);
+          invalidSectionsRemoved++;
+        }
+      }
+
+      const directCells = getDirectChildrenByTag(shape, 'Cell');
+
+      // Rule 5: PROHIBIDO inyectar TxtWidth/TxtHeight en conectores 1D (BeginX / EndX)
+      const is1DConnector = (
+        directCells.some(c => c.getAttribute('N') === 'BeginX' || c.getAttribute('N') === 'EndX') ||
+        !!getCell(shape, 'BeginX') ||
+        !!getCell(shape, 'EndX')
+      );
+
+      if (is1DConnector) {
+        shapesSkipped1D++;
         continue;
       }
 
-      // Read shape width and height
-      const widthCell = getCell(shape, 'Width');
-      const heightCell = getCell(shape, 'Height');
-
-      const widthVal = widthCell ? parseFloat(widthCell.getAttribute('V') || '1') : 1;
-      const heightVal = heightCell ? parseFloat(heightCell.getAttribute('V') || '1') : 1;
-
-      // Ensure TextXForm section exists
-      const directSections = getDirectChildrenByTag(shape, 'Section');
-      let textXFormSec = directSections.find(c => c.getAttribute('N') === 'TextXForm');
-
-      if (!textXFormSec) {
-        textXFormSec = doc.createElement('Section');
-        textXFormSec.setAttribute('N', 'TextXForm');
-
-        const xFormSec = directSections.find(c => c.getAttribute('N') === 'XForm');
-        if (xFormSec && xFormSec.nextSibling) {
-          shape.insertBefore(textXFormSec, xFormSec.nextSibling);
-        } else {
-          shape.appendChild(textXFormSec);
-        }
+      // Check if shape has own text content
+      const textNode = findFirstElementByTag(shape, 'Text');
+      if (!textNode) {
+        continue;
+      }
+      const textContent = (textNode.textContent || '').trim();
+      if (!textContent) {
+        continue;
       }
 
-      if (options.fixTextXForm || options.adjustTextBoxesAndRotations) {
-        // TxtWidth = Width (formula: Width*1)
-        setOrUpdateCell(doc, textXFormSec, 'TxtWidth', widthVal.toString(), 'Width*1');
-        // TxtHeight = Height (formula: Height*1)
-        setOrUpdateCell(doc, textXFormSec, 'TxtHeight', heightVal.toString(), 'Height*1');
-        // TxtPinX = Width * 0.5 (formula: Width*0.5)
-        setOrUpdateCell(doc, textXFormSec, 'TxtPinX', (widthVal * 0.5).toString(), 'Width*0.5');
-        // TxtPinY = Height * 0.5 (formula: Height*0.5)
-        setOrUpdateCell(doc, textXFormSec, 'TxtPinY', (heightVal * 0.5).toString(), 'Height*0.5');
-        // TxtLocPinX = TxtWidth * 0.5 (formula: TxtWidth*0.5)
-        setOrUpdateCell(doc, textXFormSec, 'TxtLocPinX', (widthVal * 0.5).toString(), 'TxtWidth*0.5');
-        // TxtLocPinY = TxtHeight * 0.5 (formula: TxtHeight*0.5)
-        setOrUpdateCell(doc, textXFormSec, 'TxtLocPinY', (heightVal * 0.5).toString(), 'TxtHeight*0.5');
-        // TxtAngle = 0 to avoid duplicate rotation
-        setOrUpdateCell(doc, textXFormSec, 'TxtAngle', '0');
+      // Read numeric Width and Height (> 0)
+      const widthCell = directCells.find(c => c.getAttribute('N') === 'Width') || getCell(shape, 'Width');
+      const heightCell = directCells.find(c => c.getAttribute('N') === 'Height') || getCell(shape, 'Height');
 
-        // Remove legacy conflicting direct cells from shape root if present
-        const directCells = getDirectChildrenByTag(shape, 'Cell');
-        const conflictingNames = ['TxtWidth', 'TxtHeight', 'TxtPinX', 'TxtPinY', 'TxtLocPinX', 'TxtLocPinY', 'TxtAngle'];
-        for (const c of directCells) {
-          const n = c.getAttribute('N') || '';
-          if (conflictingNames.includes(n)) {
-            shape.removeChild(c);
-          }
-        }
+      const widthVal = widthCell ? parseFloat(widthCell.getAttribute('V') || '') : NaN;
+      const heightVal = heightCell ? parseFloat(heightCell.getAttribute('V') || '') : NaN;
+
+      if (isNaN(widthVal) || isNaN(heightVal) || widthVal <= 0 || heightVal <= 0) {
+        // Skip invalid or zero dimension shapes
+        continue;
+      }
+
+      // Rule 4 & Specification 2.b: Create or update direct child <Cell> elements of <Shape>
+      // Strict position: inserted BEFORE the first <Section> or <Text>
+      if (options.fixTextXForm || options.adjustTextBoxesAndRotations) {
+        const wStr = widthVal.toFixed(6);
+        const hStr = heightVal.toFixed(6);
+        const halfW = (widthVal * 0.5).toFixed(6);
+        const halfH = (heightVal * 0.5).toFixed(6);
+
+        // Required text transform cells:
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtWidth', wStr, 'Width*1');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtHeight', hStr, 'Height*1');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtPinX', halfW, 'Width*0.5');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtPinY', halfH, 'Height*0.5');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtLocPinX', halfW, 'TxtWidth*0.5');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtLocPinY', halfH, 'TxtHeight*0.5');
+        setOrUpdateDirectShapeCell(doc, shape, 'LockTextEdit', '0');
+        setOrUpdateDirectShapeCell(doc, shape, 'TopMargin', '0', undefined, 'PT');
+        setOrUpdateDirectShapeCell(doc, shape, 'BottomMargin', '0', undefined, 'PT');
+        setOrUpdateDirectShapeCell(doc, shape, 'LeftMargin', '0', undefined, 'PT');
+        setOrUpdateDirectShapeCell(doc, shape, 'RightMargin', '0', undefined, 'PT');
+        setOrUpdateDirectShapeCell(doc, shape, 'VerticalAlign', '1');
 
         textBlocksFixed++;
       }
 
-      // Ensure LockTextEdit="0", WrapText="0" (to prevent word-break mid-word), and zero margins
-      let textSec = directSections.find(c => c.getAttribute('N') === 'Text');
-      if (!textSec) {
-        textSec = doc.createElement('Section');
-        textSec.setAttribute('N', 'Text');
-        shape.appendChild(textSec);
-      }
-      setOrUpdateCell(doc, textSec, 'WrapText', '0');
-      if (options.adjustTextBoxesAndRotations) {
-        setOrUpdateCell(doc, textSec, 'TopMargin', '0');
-        setOrUpdateCell(doc, textSec, 'BottomMargin', '0');
-        setOrUpdateCell(doc, textSec, 'LeftMargin', '0');
-        setOrUpdateCell(doc, textSec, 'RightMargin', '0');
+      // Specification 2.c: Small height handling (Height < 0.25 inches)
+      if (heightVal < 0.25) {
+        const paraSec = directSections.find(s => s.getAttribute('N') === 'Paragraph');
+        if (paraSec) {
+          const rows = getDirectChildrenByTag(paraSec, 'Row');
+          for (const row of rows) {
+            const rowCells = getDirectChildrenByTag(row, 'Cell');
+            const horzCell = rowCells.find(c => c.getAttribute('N') === 'HorzAlign');
+            if (!horzCell) {
+              const ns = shape.namespaceURI || 'http://schemas.microsoft.com/office/visio/2012/main';
+              const newCell = doc.createElementNS(ns, 'Cell');
+              newCell.setAttribute('N', 'HorzAlign');
+              newCell.setAttribute('V', '1'); // Centered
+              row.appendChild(newCell);
+            }
+          }
+        }
       }
 
-      let protSec = directSections.find(c => c.getAttribute('N') === 'Protection');
-      if (!protSec) {
-        protSec = doc.createElement('Section');
-        protSec.setAttribute('N', 'Protection');
-        shape.appendChild(protSec);
-      }
-      setOrUpdateCell(doc, protSec, 'LockTextEdit', '0');
-
-      // Character font normalization and size scaling
-      if (options.normalizeFont) {
-        const charSec = directSections.find(c => c.getAttribute('N') === 'Character');
+      // Character font normalization (optional)
+      if (options.normalizeFont && options.targetFontFamily) {
+        const charSec = directSections.find(s => s.getAttribute('N') === 'Character');
         if (charSec) {
           const rows = getDirectChildrenByTag(charSec, 'Row');
           for (const row of rows) {
-            setOrUpdateCell(doc, row, 'Font', options.targetFontFamily || 'Calibri');
-
-            const sizeCell = getCell(row, 'Size');
-            if (sizeCell) {
-              const currentSize = parseFloat(sizeCell.getAttribute('V') || '0');
-              if (currentSize > 0) {
-                const scaledSize = currentSize * options.fontScaleFactor;
-                sizeCell.setAttribute('V', scaledSize.toFixed(6));
-              }
+            const rowCells = getDirectChildrenByTag(row, 'Cell');
+            let fontCell = rowCells.find(c => c.getAttribute('N') === 'Font');
+            if (!fontCell) {
+              const ns = shape.namespaceURI || 'http://schemas.microsoft.com/office/visio/2012/main';
+              fontCell = doc.createElementNS(ns, 'Cell');
+              fontCell.setAttribute('N', 'Font');
+              row.appendChild(fontCell);
             }
+            fontCell.setAttribute('V', options.targetFontFamily);
           }
         }
       }
     }
 
-    // Write back modified page XML to ZIP
+    // Write back updated page XML into ZIP (preserving all other files intact)
     const modifiedXml = serializeXml(doc);
     zip.file(pagePath, modifiedXml);
   }
 
-  logs.push(`Parcheo VSDX completado: ${textBlocksFixed} bloques TextXForm reparados.`);
+  logs.push(
+    `Parcheo quirúrgico VSDX completado: ${textBlocksFixed} figuras 2D calibradas con precisión XSD, ${shapesSkipped1D} conectores 1D protegidos, ${invalidSectionsRemoved} secciones ilegales eliminadas.`
+  );
 
   const patchedBlob = await zip.generateAsync({
     type: 'blob',
@@ -237,6 +283,8 @@ export async function patchVsdx(
       pagesCount: totalPages,
       shapesCount: totalShapes,
       textBlocksFixed,
+      shapesSkipped1D,
+      invalidSectionsRemoved,
       warnings,
       logs
     }

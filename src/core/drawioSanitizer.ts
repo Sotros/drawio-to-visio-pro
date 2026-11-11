@@ -63,9 +63,14 @@ export function compressDiagram(xml: string): string {
 /**
  * Strips HTML formatting after styles have been rescued.
  * Replaces <br> / </div> / </p> with real \n and decodes HTML entities.
+ * Removes trailing newlines to prevent CAD title blocks from shifting text up.
  */
-export function cleanHtmlText(rawText: string): { cleaned: string; tagsRemoved: number } {
-  if (!rawText) return { cleaned: '', tagsRemoved: 0 };
+export function cleanHtmlText(rawText: string): {
+  cleaned: string;
+  tagsRemoved: number;
+  trailingNewlinesRemoved: number;
+} {
+  if (!rawText) return { cleaned: '', tagsRemoved: 0, trailingNewlinesRemoved: 0 };
 
   let tagsCount = 0;
   const tagMatches = rawText.match(/<\/?[a-z][^>]*>/gi);
@@ -95,10 +100,15 @@ export function cleanHtmlText(rawText: string): { cleaned: string; tagsRemoved: 
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
 
-  // 4. Normalize multiple newlines
+  // 4. Normalize multiple newlines and carriage returns
   text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-  return { cleaned: text, tagsRemoved: tagsCount };
+  // 5. Remove trailing newlines (critical for CAD title block text boxes)
+  const beforeTrailing = text;
+  text = text.replace(/\n+$/, '');
+  const trailingNewlinesRemoved = beforeTrailing.length - text.length;
+
+  return { cleaned: text, tagsRemoved: tagsCount, trailingNewlinesRemoved };
 }
 
 /**
@@ -147,10 +157,15 @@ export function serializeStyleString(styleMap: Record<string, string>): string {
 }
 
 /**
- * Normalizes style attribute.
+ * Normalizes style attribute:
+ * Sets html=0, eliminates negative margins, and replaces overflow=width with whiteSpace=wrap.
  */
-export function sanitizeStyle(styleStr: string, options: ConversionOptions): string {
+export function sanitizeStyle(styleStr: string, options: ConversionOptions): {
+  style: string;
+  negativeMarginsFixed: number;
+} {
   const styleMap = parseStyleString(styleStr);
+  let negativeMarginsFixed = 0;
 
   if (options.cleanHtml || options.rescueHtmlStyles) {
     styleMap['html'] = '0';
@@ -158,13 +173,27 @@ export function sanitizeStyle(styleStr: string, options: ConversionOptions): str
 
   if (options.adjustTextBoxesAndRotations) {
     // Ensure clean spacing without negative bounds
-    if (parseInt(styleMap['spacingTop'] || '0') < 0) styleMap['spacingTop'] = '0';
-    if (parseInt(styleMap['spacingBottom'] || '0') < 0) styleMap['spacingBottom'] = '0';
-    if (parseInt(styleMap['spacingLeft'] || '0') < 0) styleMap['spacingLeft'] = '0';
-    if (parseInt(styleMap['spacingRight'] || '0') < 0) styleMap['spacingRight'] = '0';
+    for (const key of ['spacingTop', 'spacingBottom', 'spacingLeft', 'spacingRight', 'spacing']) {
+      if (styleMap[key] !== undefined) {
+        const val = parseFloat(styleMap[key]);
+        if (val < 0) {
+          styleMap[key] = '0';
+          negativeMarginsFixed++;
+        }
+      }
+    }
+
+    // Replace overflow=width with whiteSpace=wrap
+    if (styleMap['overflow'] === 'width' || styleMap['overflow'] === 'fill') {
+      delete styleMap['overflow'];
+      styleMap['whiteSpace'] = 'wrap';
+    }
   }
 
-  return serializeStyleString(styleMap);
+  return {
+    style: serializeStyleString(styleMap),
+    negativeMarginsFixed
+  };
 }
 
 /**
@@ -185,8 +214,11 @@ export function sanitizeDrawio(
     throw new Error(`Error de sintaxis XML en el archivo: ${errorMsg.slice(0, 200)}`);
   }
 
+  let totalPagesDecompressed = 0;
   let totalHtmlTagsRemoved = 0;
   let totalHtmlStylesRescued = 0;
+  let totalTrailingNewlinesRemoved = 0;
+  let totalNegativeMarginsCleared = 0;
   let totalUserObjectsResolved = 0;
   let totalShapes = 0;
   let totalConnectors = 0;
@@ -207,13 +239,16 @@ export function sanitizeDrawio(
       const pageName = diagram.getAttribute('name') || `Página ${i + 1}`;
 
       let graphModelXml = '';
-      const rawDiagramText = diagram.textContent || '';
+      const rawDiagramText = (diagram.textContent || '').trim();
       const modelNode = findFirstElementByTag(diagram, 'mxGraphModel');
 
       if (modelNode) {
         graphModelXml = serializeXml(modelNode);
       } else {
         graphModelXml = decompressDiagram(rawDiagramText);
+        if (graphModelXml) {
+          totalPagesDecompressed++;
+        }
       }
 
       if (!graphModelXml) {
@@ -226,6 +261,8 @@ export function sanitizeDrawio(
 
       totalHtmlTagsRemoved += processResult.htmlTagsRemoved;
       totalHtmlStylesRescued += processResult.htmlStylesRescued;
+      totalTrailingNewlinesRemoved += processResult.trailingNewlinesRemoved;
+      totalNegativeMarginsCleared += processResult.negativeMarginsCleared;
       totalUserObjectsResolved += processResult.userObjectsResolved;
       totalShapes += processResult.shapesCount;
       totalConnectors += processResult.connectorsCount;
@@ -233,7 +270,7 @@ export function sanitizeDrawio(
       totalImagesEmbedded += processResult.imagesEmbedded;
       parsedPages.push(processResult.page);
 
-      // Replace diagram content with sanitized version
+      // Replace diagram content with plain uncompressed <mxGraphModel>
       while (diagram.firstChild) {
         diagram.removeChild(diagram.firstChild);
       }
@@ -253,6 +290,8 @@ export function sanitizeDrawio(
 
     totalHtmlTagsRemoved += processResult.htmlTagsRemoved;
     totalHtmlStylesRescued += processResult.htmlStylesRescued;
+    totalTrailingNewlinesRemoved += processResult.trailingNewlinesRemoved;
+    totalNegativeMarginsCleared += processResult.negativeMarginsCleared;
     totalUserObjectsResolved += processResult.userObjectsResolved;
     totalShapes += processResult.shapesCount;
     totalConnectors += processResult.connectorsCount;
@@ -266,16 +305,19 @@ export function sanitizeDrawio(
   const sanitizedXml = serializeXml(xmlDoc);
 
   logs.push(
-    `Sanitización V3.0 completada: ${totalShapes} formas, ${totalConnectors} conectores, ${totalUserObjectsResolved} UserObjects resueltos, ${totalHtmlStylesRescued} estilos rescatados, ${totalImagesEmbedded} imágenes Base64 procesadas.`
+    `Pre-limpieza CAD Fase 1 completada: ${parsedPages.length} páginas (${totalPagesDecompressed} descomprimidas), ${totalShapes} formas, ${totalConnectors} conectores, ${totalUserObjectsResolved} UserObjects preservados, ${totalHtmlStylesRescued} estilos tipográficos rescatados, ${totalNegativeMarginsCleared} márgenes corregidos.`
   );
 
   return {
     sanitizedXml,
     report: {
       pagesCount: parsedPages.length,
+      pagesDecompressed: totalPagesDecompressed,
       userObjectsResolved: totalUserObjectsResolved,
       htmlStylesRescued: totalHtmlStylesRescued,
       htmlTagsRemoved: totalHtmlTagsRemoved,
+      trailingNewlinesRemoved: totalTrailingNewlinesRemoved,
+      negativeMarginsCleared: totalNegativeMarginsCleared,
       shapesCount: totalShapes,
       connectorsCount: totalConnectors,
       stencilsDecoded: totalStencilsDecoded,
@@ -301,6 +343,8 @@ function processModelDocument(
   page: DrawioPage;
   htmlTagsRemoved: number;
   htmlStylesRescued: number;
+  trailingNewlinesRemoved: number;
+  negativeMarginsCleared: number;
   userObjectsResolved: number;
   shapesCount: number;
   connectorsCount: number;
@@ -309,6 +353,8 @@ function processModelDocument(
 } {
   let htmlTagsRemoved = 0;
   let htmlStylesRescued = 0;
+  let trailingNewlinesRemoved = 0;
+  let negativeMarginsCleared = 0;
   let userObjectsResolved = 0;
   let shapesCount = 0;
   let connectorsCount = 0;
@@ -363,7 +409,7 @@ function processModelDocument(
 
     // Deep HTML Style Extractor before cleaning HTML
     let extractedStyles = extractHtmlStyles(cellValue);
-    if (extractedStyles.fontSizePt || extractedStyles.fontColor || extractedStyles.fontFamily) {
+    if (extractedStyles.fontSizePt || extractedStyles.fontColor || extractedStyles.fontFamily || (extractedStyles.fontStyle && extractedStyles.fontStyle > 0)) {
       htmlStylesRescued++;
     }
 
@@ -371,6 +417,7 @@ function processModelDocument(
     if (options.cleanHtml || options.rescueHtmlStyles) {
       const cleanRes = cleanHtmlText(cellValue);
       htmlTagsRemoved += cleanRes.tagsRemoved;
+      trailingNewlinesRemoved += cleanRes.trailingNewlinesRemoved;
       cellValue = cleanRes.cleaned;
       cellEl.setAttribute('value', cellValue);
       if (node !== cellEl && node.hasAttribute('label')) {
@@ -381,18 +428,23 @@ function processModelDocument(
     const rawStyle = cellEl.getAttribute('style') || '';
     const parsedStyle = parseStyleString(rawStyle);
 
-    // Apply rescued styles into cell parsedStyle if not already defined
-    if (extractedStyles.fontSizePt && !parsedStyle['fontSize']) {
-      parsedStyle['fontSize'] = (extractedStyles.fontSizePt / 0.75).toFixed(2); // in px
+    // Apply rescued styles into cell parsedStyle (deep typography rescue)
+    if (extractedStyles.fontSizePx && extractedStyles.fontSizePx > 2) {
+      parsedStyle['fontSize'] = extractedStyles.fontSizePx.toString();
     }
-    if (extractedStyles.fontColor && !parsedStyle['fontColor']) {
+    if (extractedStyles.fontColor) {
       parsedStyle['fontColor'] = extractedStyles.fontColor;
     }
-    if (extractedStyles.fontFamily && !parsedStyle['fontFamily']) {
+    if (extractedStyles.fontFamily) {
       parsedStyle['fontFamily'] = extractedStyles.fontFamily;
     }
+    if (extractedStyles.fontStyle && extractedStyles.fontStyle > 0) {
+      parsedStyle['fontStyle'] = extractedStyles.fontStyle.toString();
+    }
 
-    const style = sanitizeStyle(serializeStyleString(parsedStyle), options);
+    const sanitizedStyleResult = sanitizeStyle(serializeStyleString(parsedStyle), options);
+    negativeMarginsCleared += sanitizedStyleResult.negativeMarginsFixed;
+    const style = sanitizedStyleResult.style;
     cellEl.setAttribute('style', style);
 
     const isVertex = cellEl.getAttribute('vertex') === '1';
@@ -538,6 +590,8 @@ function processModelDocument(
     },
     htmlTagsRemoved,
     htmlStylesRescued,
+    trailingNewlinesRemoved,
+    negativeMarginsCleared,
     userObjectsResolved,
     shapesCount,
     connectorsCount,

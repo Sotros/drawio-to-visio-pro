@@ -237,7 +237,8 @@ export async function convertDrawioToVsdx(
       const fillColorHex = parseHexColor(rawFillColor, '#FFFFFF');
 
       // Embedded Base64 Image (V3.0: supports with and without ';base64')
-      let foreignImageXml = '';
+      let foreignCellsXml = '';
+      let foreignDataXml = '';
       let isForeignType = false;
 
       if (cell.isBase64Image && cell.imageData && options.convertStencilsAndImages) {
@@ -260,11 +261,12 @@ export async function convertDrawioToVsdx(
           );
 
           isForeignType = true;
-          foreignImageXml = `
+          foreignCellsXml = `
       <Cell N="ImgOffsetX" V="0"/>
       <Cell N="ImgOffsetY" V="0"/>
       <Cell N="ImgWidth" V="${widthIn.toFixed(4)}" F="Width*1"/>
-      <Cell N="ImgHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>
+      <Cell N="ImgHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>`;
+          foreignDataXml = `
       <ForeignData ForeignType="Bitmap" CompressionType="${ext === 'png' ? 'PNG' : 'JPEG'}">
         <Rel r:id="${rId}"/>
       </ForeignData>`;
@@ -353,6 +355,9 @@ export async function convertDrawioToVsdx(
       // ==========================================
       const hasText = cell.value && cell.value.trim().length > 0;
       let textContentXml = '';
+      let vertAlign = '1';
+      if (style['verticalAlign'] === 'top') vertAlign = '0';
+      else if (style['verticalAlign'] === 'bottom') vertAlign = '2';
 
       if (hasText) {
         totalTextBlocksFixed++;
@@ -374,10 +379,6 @@ export async function convertDrawioToVsdx(
         if (style['align'] === 'left') horzAlign = '0';
         else if (style['align'] === 'right') horzAlign = '2';
 
-        let vertAlign = '1';
-        if (style['verticalAlign'] === 'top') vertAlign = '0';
-        else if (style['verticalAlign'] === 'bottom') vertAlign = '2';
-
         textContentXml = `
       <Section N="Character">
         <Row IX="0">
@@ -392,40 +393,34 @@ export async function convertDrawioToVsdx(
           <Cell N="HorzAlign" V="${horzAlign}"/>
         </Row>
       </Section>
-      <Section N="Text">
-        <Cell N="TopMargin" V="0"/>
-        <Cell N="BottomMargin" V="0"/>
-        <Cell N="LeftMargin" V="0"/>
-        <Cell N="RightMargin" V="0"/>
-        <Cell N="WrapText" V="0"/>
-        <Cell N="VerticalAlign" V="${vertAlign}"/>
-      </Section>
       <Text><cp IX="0"/><pp IX="0"/>${escapeXml(cell.value)}</Text>`;
       }
 
       const shapeTypeAttr = isForeignType ? 'Type="Foreign"' : 'Type="Shape"';
 
+      // Strict Visio OpenXML: all <Cell> direct children MUST precede any <Section>, <Text>, or <ForeignData>
       const shapeXml = `    <Shape ID="${visioId}" ${shapeTypeAttr} LineStyle="3" FillStyle="3" TextStyle="3">
-      <Section N="XForm">
-        <Cell N="PinX" V="${pinX.toFixed(4)}"/>
-        <Cell N="PinY" V="${pinY.toFixed(4)}"/>
-        <Cell N="Width" V="${widthIn.toFixed(4)}"/>
-        <Cell N="Height" V="${heightIn.toFixed(4)}"/>
-        <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
-        <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
-        <Cell N="Angle" V="${angleRad.toFixed(6)}"/>
-        <Cell N="FlipX" V="${cell.flipH ? '1' : '0'}"/>
-        <Cell N="FlipY" V="${cell.flipV ? '1' : '0'}"/>
-      </Section>
-      <Section N="TextXForm">
-        <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
-        <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
-        <Cell N="TxtWidth" V="${widthIn.toFixed(4)}" F="Width*1"/>
-        <Cell N="TxtHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>
-        <Cell N="TxtLocPinX" V="${locPinX.toFixed(4)}" F="TxtWidth*0.5"/>
-        <Cell N="TxtLocPinY" V="${locPinY.toFixed(4)}" F="TxtHeight*0.5"/>
-        <Cell N="TxtAngle" V="0"/>
-      </Section>
+      <Cell N="PinX" V="${pinX.toFixed(4)}"/>
+      <Cell N="PinY" V="${pinY.toFixed(4)}"/>
+      <Cell N="Width" V="${widthIn.toFixed(4)}"/>
+      <Cell N="Height" V="${heightIn.toFixed(4)}"/>
+      <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
+      <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
+      <Cell N="Angle" V="${angleRad.toFixed(6)}"/>
+      <Cell N="FlipX" V="${cell.flipH ? '1' : '0'}"/>
+      <Cell N="FlipY" V="${cell.flipV ? '1' : '0'}"/>
+      <Cell N="TxtWidth" V="${widthIn.toFixed(4)}" F="Width*1"/>
+      <Cell N="TxtHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>
+      <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
+      <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
+      <Cell N="TxtLocPinX" V="${locPinX.toFixed(4)}" F="TxtWidth*0.5"/>
+      <Cell N="TxtLocPinY" V="${locPinY.toFixed(4)}" F="TxtHeight*0.5"/>
+      <Cell N="LockTextEdit" V="0"/>
+      <Cell N="TopMargin" V="0" U="PT"/>
+      <Cell N="BottomMargin" V="0" U="PT"/>
+      <Cell N="LeftMargin" V="0" U="PT"/>
+      <Cell N="RightMargin" V="0" U="PT"/>
+      <Cell N="VerticalAlign" V="${vertAlign}"/>${foreignCellsXml}
       <Section N="Line">
         <Cell N="LineColor" V="${strokeColorHex}"/>
         <Cell N="LineWeight" V="${strokeWidthIn}"/>
@@ -435,10 +430,7 @@ export async function convertDrawioToVsdx(
       <Section N="Fill">
         <Cell N="FillForegnd" V="${fillColorHex}"/>
         <Cell N="FillPattern" V="${isFillNone ? '0' : '1'}"/>
-      </Section>
-      <Section N="Protection">
-        <Cell N="LockTextEdit" V="0"/>
-      </Section>${geometryXml}${foreignImageXml}${textContentXml}
+      </Section>${geometryXml}${foreignDataXml}${textContentXml}
     </Shape>`;
 
       shapesXmlParts.push(shapeXml);
@@ -556,15 +548,24 @@ export async function convertDrawioToVsdx(
 
       // Conector 2D puro sin XForm1D: nunca rota sobre la diagonal
       const edgeShapeXml = `    <Shape ID="${visioId}" Type="Shape" LineStyle="3" TextStyle="3">
-      <Section N="XForm">
-        <Cell N="PinX" V="${pinX.toFixed(4)}"/>
-        <Cell N="PinY" V="${pinY.toFixed(4)}"/>
-        <Cell N="Width" V="${widthIn.toFixed(4)}"/>
-        <Cell N="Height" V="${heightIn.toFixed(4)}"/>
-        <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
-        <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
-        <Cell N="Angle" V="0"/>
-      </Section>
+      <Cell N="PinX" V="${pinX.toFixed(4)}"/>
+      <Cell N="PinY" V="${pinY.toFixed(4)}"/>
+      <Cell N="Width" V="${widthIn.toFixed(4)}"/>
+      <Cell N="Height" V="${heightIn.toFixed(4)}"/>
+      <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
+      <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
+      <Cell N="Angle" V="0"/>${cell.value ? `
+      <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
+      <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
+      <Cell N="TxtWidth" V="${Math.min(widthIn, 1.5).toFixed(4)}"/>
+      <Cell N="TxtHeight" V="0.3"/>
+      <Cell N="TxtLocPinX" V="${(Math.min(widthIn, 1.5) / 2).toFixed(4)}" F="TxtWidth*0.5"/>
+      <Cell N="TxtLocPinY" V="0.15" F="TxtHeight*0.5"/>
+      <Cell N="TxtAngle" V="0"/>
+      <Cell N="TopMargin" V="0" U="PT"/>
+      <Cell N="BottomMargin" V="0" U="PT"/>
+      <Cell N="LeftMargin" V="0" U="PT"/>
+      <Cell N="RightMargin" V="0" U="PT"/>` : ''}
       <Section N="Line">
         <Cell N="LineColor" V="${strokeColor}"/>
         <Cell N="LineWeight" V="${strokeWidthIn}"/>
@@ -579,24 +580,12 @@ export async function convertDrawioToVsdx(
         <Cell N="NoLine" V="0"/>
 ${geomRows.join('\n')}
       </Section>${cell.value ? `
-      <Section N="TextXForm">
-        <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
-        <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
-        <Cell N="TxtWidth" V="${Math.min(widthIn, 1.5).toFixed(4)}"/>
-        <Cell N="TxtHeight" V="0.3"/>
-        <Cell N="TxtLocPinX" V="${(Math.min(widthIn, 1.5) / 2).toFixed(4)}" F="TxtWidth*0.5"/>
-        <Cell N="TxtLocPinY" V="0.15" F="TxtHeight*0.5"/>
-        <Cell N="TxtAngle" V="0"/>
-      </Section>
       <Section N="Character">
         <Row IX="0">
           <Cell N="Font" V="Calibri"/>
           <Cell N="Size" V="0.125" unit="PT"/>
           <Cell N="Color" V="${strokeColor}"/>
         </Row>
-      </Section>
-      <Section N="Text">
-        <Cell N="WrapText" V="0"/>
       </Section>
       <Text><cp IX="0"/>${escapeXml(cell.value)}</Text>` : ''}
     </Shape>`;

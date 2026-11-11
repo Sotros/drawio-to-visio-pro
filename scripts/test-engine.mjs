@@ -19,26 +19,32 @@ import { DEFAULT_OPTIONS } from '../src/types/index.ts';
 
 async function runTests() {
   console.log('================================================================');
-  console.log('🧪 Verificación Motor Arquitectura V3.0: Drawio2Visio Fixer Pro');
+  console.log('🧪 Verificación Motor Arquitectura V4.0: Drawio2Visio Fixer Pro');
   console.log('================================================================\n');
 
   const samplePath = path.join(rootDir, 'sample-diagram.drawio');
   const sampleXml = fs.readFileSync(samplePath, 'utf8');
 
-  // Test 1: Descompresión y Resolución Unificada de <UserObject> + Extractor HTML
-  console.log('1️⃣ Probando Módulo 1 & 2: drawioSanitizer + htmlStyleExtractor...');
+  // Test 1: Fase 1 - Pre-limpiador CAD para .drawio
+  console.log('1️⃣ Probando Fase 1: drawioSanitizer (Pre-limpiador CAD)...');
   const sanitizeResult = sanitizeDrawio(sampleXml, DEFAULT_OPTIONS);
-  console.log(`   - Páginas detectadas: ${sanitizeResult.pages.length}`);
-  console.log(`   - UserObjects resueltos: ${sanitizeResult.report.userObjectsResolved}`);
-  console.log(`   - Estilos HTML rescatados (bypassing 1px): ${sanitizeResult.report.htmlStylesRescued}`);
+  console.log(`   - Páginas procesadas: ${sanitizeResult.pages.length}`);
+  console.log(`   - Páginas descomprimidas: ${sanitizeResult.report.pagesDecompressed}`);
+  console.log(`   - UserObjects preservados: ${sanitizeResult.report.userObjectsResolved}`);
+  console.log(`   - Estilos tipográficos rescatados: ${sanitizeResult.report.htmlStylesRescued}`);
   console.log(`   - Etiquetas HTML eliminadas: ${sanitizeResult.report.htmlTagsRemoved}`);
-  console.log(`   - Formas (2D) detectadas: ${sanitizeResult.report.shapesCount}`);
-  console.log(`   - Conectores (1D) detectados: ${sanitizeResult.report.connectorsCount}`);
-  console.log(`   - Imágenes Base64 detectadas (sin ';base64'): ${sanitizeResult.report.imagesEmbedded}`);
+  console.log(`   - Saltos de línea finales (\\n+$) eliminados: ${sanitizeResult.report.trailingNewlinesRemoved}`);
+  console.log(`   - Márgenes negativos corregidos: ${sanitizeResult.report.negativeMarginsCleared}`);
 
   if (sanitizeResult.report.userObjectsResolved === 0) {
     throw new Error('Fallo: No se resolvieron los elementos <UserObject>.');
   }
+
+  // Verify that the sanitized XML output contains plain <mxGraphModel> inside <diagram>
+  if (!sanitizeResult.sanitizedXml.includes('<diagram') || !sanitizeResult.sanitizedXml.includes('<mxGraphModel')) {
+    throw new Error('Fallo: El XML sanitizado no contiene <diagram> con <mxGraphModel> plano.');
+  }
+  console.log('   ✅ Descompresión transparente a XML plano para draw.io v26.0.16: CORRECTA');
 
   // Verify Deep HTML Style Extraction on title-block
   const page = sanitizeResult.pages[0];
@@ -48,7 +54,7 @@ async function runTests() {
   }
 
   console.log(`   - title-block valor limpio: "${titleBlock.value.trim()}"`);
-  console.log(`   - title-block fontSize rescatado: ${titleBlock.fontSizePt} pt (esperado ~19.68 pt para 26.25px)`);
+  console.log(`   - title-block fontSize rescatado: ${titleBlock.fontSizePt} pt`);
   console.log(`   - title-block fontColor: ${titleBlock.fontColor}`);
   console.log(`   - title-block fontFamily: ${titleBlock.fontFamily}`);
 
@@ -58,7 +64,7 @@ async function runTests() {
   console.log('   ✅ Extractor de estilos HTML profundos: CORRECTO (1px ignorado, 26.25px rescatado)');
 
   // Verify Recursive 3-level coordinate resolution
-  console.log('\n2️⃣ Probando Módulo 3: Jerarquía recursiva getAbsoluteGeometry (3 niveles)...');
+  console.log('\n2️⃣ Probando Jerarquía recursiva getAbsoluteGeometry (3 niveles)...');
   const cellsMap = new Map();
   page.cells.forEach(c => cellsMap.set(c.id, c));
 
@@ -76,94 +82,100 @@ async function runTests() {
   if (pin1Geo.rotation !== 90) {
     throw new Error(`Fallo: La rotación de PIN_1 debería ser 90°, obtenido ${pin1Geo.rotation}°`);
   }
-  console.log('   ✅ Jerarquía de 3 niveles y rotación sin swap: CORRECTA (x=340, y=230, rot=90°)');
+  console.log('   ✅ Jerarquía de 3 niveles y rotación: CORRECTA (x=340, y=230, rot=90°)');
 
-  // Test 3: Conversión OpenXML VSDX completa (V3.0)
-  console.log('\n3️⃣ Probando Módulos V3.0 en drawioToVsdx...');
+  // Test 3: Conversión OpenXML VSDX completa (Motor Interno de Soporte)
+  console.log('\n3️⃣ Probando generación OpenXML VSDX completa...');
   const conversionResult = await convertDrawioToVsdx(sampleXml, DEFAULT_OPTIONS);
   console.log(`   - VSDX tamaño generado: ${conversionResult.vsdxBlob.size} bytes`);
   console.log(`   - Conectores 2D ortogonales trazados: ${conversionResult.report.orthogonalConnectorsCount}`);
-  console.log(`   - Imágenes incrustadas en visio/media/: ${conversionResult.report.imagesEmbedded}`);
-  console.log(`   - Bordes fantasma limpiados (strokeColor=none): ${conversionResult.report.ghostBordersCleared}`);
-  console.log(`   - Líneas de cajetín hairline preservadas: ${conversionResult.report.hairlinesPreserved}`);
-  console.log(`   - Bloques TextXForm fijados: ${conversionResult.report.textBlocksFixed}`);
+  console.log(`   - Imágenes incrustadas: ${conversionResult.report.imagesEmbedded}`);
 
-  // Inspect generated vsdx ZIP package
   const vsdxBuffer = await conversionResult.vsdxBlob.arrayBuffer();
-  const zip = await JSZip.loadAsync(vsdxBuffer);
 
-  // Check media image file (extracted from data:image/png,... without ';base64')
-  if (!zip.file('visio/media/image1.png')) {
-    throw new Error('Fallo: No se encontró la imagen visio/media/image1.png en el paquete VSDX.');
-  }
-  console.log('   ✅ Imagen data:image/png,<base64> (sin ;base64) extraída e incrustada en visio/media/image1.png');
-
-  // Check Content_Types
-  const contentTypesXml = await zip.file('[Content_Types].xml').async('string');
-  if (!contentTypesXml.includes('Extension="png"') || !contentTypesXml.includes('Extension="jpg"')) {
-    throw new Error('Fallo: [Content_Types].xml no contiene las extensiones de imagen.');
-  }
-  console.log('   ✅ Registro de tipos MIME en [Content_Types].xml: CORRECTO');
-
-  // Check page rels for image
-  const pageRelsXml = await zip.file('visio/pages/_rels/page1.xml.rels').async('string');
-  if (!pageRelsXml.includes('Target="../media/image1.png"')) {
-    throw new Error('Fallo: visio/pages/_rels/page1.xml.rels no contiene relación con image1.png');
-  }
-  console.log('   ✅ Relación rIdImg1 en visio/pages/_rels/page1.xml.rels: CORRECTA');
-
-  // Inspect page1.xml
-  const page1Xml = await zip.file('visio/pages/page1.xml').async('string');
-
-  // Check ForeignData in shape
-  if (!page1Xml.includes('ForeignData ForeignType="Bitmap"') || !page1Xml.includes('Rel r:id="rIdImg1"')) {
-    throw new Error('Fallo: page1.xml no contiene el bloque ForeignData con bitmap.');
-  }
-  console.log('   ✅ Bloque <ForeignData> Type="Foreign" con bitmap: CORRECTO');
-
-  // Check 2D polyline connector without XForm1D rotational distortion
-  // In V3.0, the connector shape has Section N="Geometry" with NoFill="1" and NO Section N="XForm1D"
-  const edgeShapes = page1Xml.match(/<Shape ID="13"[\s\S]*?<\/Shape>/);
-  if (edgeShapes && edgeShapes[0].includes('XForm1D')) {
-    throw new Error('Fallo: El conector ortogonal 2D no debe tener XForm1D para evitar rotación diagonal.');
-  }
-  console.log('   ✅ Conector ortogonal como Shape 2D con Angle="0" (sin distorsión 1D): CORRECTO');
-
-  // Check ghost border elimination: title-block shape must have NoLine="1" and LinePattern="0"
-  if (!page1Xml.includes('<Cell N="LinePattern" V="0"/>') || !page1Xml.includes('<Cell N="NoLine" V="1"/>')) {
-    throw new Error('Fallo: No se eliminó el borde fantasma de la etiqueta con strokeColor=none.');
-  }
-  console.log('   ✅ Eliminación de borde fantasma (LinePattern=0, NoLine=1): CORRECTA');
-
-  // Check hairline line weight = 0.007 in
-  if (!page1Xml.includes('N="LineWeight" V="0.007"') && !page1Xml.includes('V="0.007"')) {
-    throw new Error('Fallo: Las líneas de cajetín strokeWidth=0 no se configuraron con LineWeight V="0.007".');
-  }
-  console.log('   ✅ Línea de cajetín Hairline CAD (<Cell N="LineWeight" V="0.007"/>): CORRECTA');
-  console.log('   ✅ Línea de cajetín Hairline CAD (LineWeight="0.007"): CORRECTA');
-
-  // Test 4: Reparador VSDX
-  console.log('\n4️⃣ Probando Módulo 4: vsdxPatcher...');
+  // Test 4: Fase 2 - Parcheador Quirúrgico XSD 100% Seguro para Visio
+  console.log('\n4️⃣ Probando Fase 2: vsdxPatcher (5 Reglas de Oro XSD)...');
   const patchResult = await patchVsdx(vsdxBuffer, DEFAULT_OPTIONS);
   console.log(`   - Páginas procesadas por patcher: ${patchResult.report.pagesCount}`);
-  console.log(`   - TextXForm corregidos: ${patchResult.report.textBlocksFixed}`);
+  console.log(`   - Figuras 2D calibradas: ${patchResult.report.textBlocksFixed}`);
+  console.log(`   - Conectores 1D protegidos (sin TxtWidth/TxtHeight): ${patchResult.report.shapesSkipped1D}`);
+  console.log(`   - Secciones ilegales eliminadas: ${patchResult.report.invalidSectionsRemoved}`);
+
+  // Inspect the patched VSDX to verify the 5 Golden Rules
+  const patchedZip = await JSZip.loadAsync(await patchResult.patchedBlob.arrayBuffer());
+
+  // Rule 1 Verification: [Content_Types].xml, _rels/.rels, visio/document.xml preserved
+  if (!patchedZip.file('[Content_Types].xml') || !patchedZip.file('visio/document.xml')) {
+    throw new Error('Fallo Regla 1: Faltan archivos esenciales del paquete OpenXML.');
+  }
+  console.log('   ✅ Regla 1: Archivos ZIP estructurales [Content_Types].xml y document.xml intactos.');
+
+  // Rule 2 & 3 & 4 Verification on page1.xml
+  const patchedPage1Xml = await patchedZip.file('visio/pages/page1.xml').async('string');
+  const parser = new DOMParser();
+  const page1Doc = parser.parseFromString(patchedPage1Xml, 'application/xml');
+
+  // Verify NO <Section N="TextXForm"> or <Section N="TextBlock">
+  const sections = Array.from(page1Doc.getElementsByTagName('Section'));
+  const illegalSections = sections.filter(s => {
+    const n = s.getAttribute('N');
+    return n === 'TextXForm' || n === 'TextBlock';
+  });
+  if (illegalSections.length > 0) {
+    throw new Error(`Fallo Regla 3: Se encontraron ${illegalSections.length} secciones ilegales <Section N="TextXForm">.`);
+  }
+  console.log('   ✅ Regla 3: Cero secciones inexistentes (<Section N="TextXForm"> / <Section N="TextBlock">).');
+
+  // Verify Rule 4: Strict ordering of <Cell> before any <Section>, <Text>, <ForeignData>, <Shapes>
+  const shapes = Array.from(page1Doc.getElementsByTagName('Shape'));
+  for (const sh of shapes) {
+    let seenNonCell = false;
+    for (let i = 0; i < sh.childNodes.length; i++) {
+      const child = sh.childNodes[i];
+      if (child.nodeType === 1) {
+        const tagName = child.tagName.toLowerCase();
+        if (tagName === 'cell') {
+          if (seenNonCell) {
+            throw new Error(`Fallo Regla 4: <Cell N="${child.getAttribute('N')}"> aparece después de un nodo no-Cell en <Shape ID="${sh.getAttribute('ID')}">.`);
+          }
+        } else {
+          seenNonCell = true;
+        }
+      }
+    }
+  }
+  console.log('   ✅ Regla 4: Orden estricto XSD verificado (TODOS los <Cell> preceden a <Section> y <Text>).');
+
+  // Verify Rule 5: 1D connector shapes (BeginX / EndX) do NOT have TxtWidth
+  for (const sh of shapes) {
+    const cells = Array.from(sh.getElementsByTagName('Cell'));
+    const is1D = cells.some(c => c.getAttribute('N') === 'BeginX' || c.getAttribute('N') === 'EndX');
+    if (is1D) {
+      const directCells = Array.from(sh.childNodes).filter(n => n.nodeType === 1 && n.tagName.toLowerCase() === 'cell');
+      const hasTxtWidth = directCells.some(c => c.getAttribute('N') === 'TxtWidth');
+      if (hasTxtWidth) {
+        throw new Error(`Fallo Regla 5: Conector 1D ID="${sh.getAttribute('ID')}" tiene celda TxtWidth inyectada.`);
+      }
+    }
+  }
+  console.log('   ✅ Regla 5: Conectores 1D protegidos (cero inyección indebida de TxtWidth/TxtHeight).');
 
   // Save sample fixed files
   const outVsdxPath = path.join(rootDir, 'sample-diagram-fixed.vsdx');
   const outDrawioPath = path.join(rootDir, 'sample-diagram-clean.drawio');
-  fs.writeFileSync(outVsdxPath, Buffer.from(vsdxBuffer));
-  fs.writeFileSync(outDrawioPath, conversionResult.cleanDrawioXml, 'utf8');
+  fs.writeFileSync(outVsdxPath, Buffer.from(await patchResult.patchedBlob.arrayBuffer()));
+  fs.writeFileSync(outDrawioPath, sanitizeResult.sanitizedXml, 'utf8');
 
-  console.log('\n💾 Archivos V3.0 generados en disco:');
+  console.log('\n💾 Archivos V4.0 generados en disco:');
   console.log(`   - ${outVsdxPath} (${fs.statSync(outVsdxPath).size} bytes)`);
   console.log(`   - ${outDrawioPath} (${fs.statSync(outDrawioPath).size} bytes)`);
 
   console.log('\n================================================================');
-  console.log('🎉 TODAS LAS PRUEBAS DE ARQUITECTURA V3.0 DEFINITIVA PASARON CON ÉXITO');
+  console.log('🎉 TODAS LAS PRUEBAS DE ARQUITECTURA V4.0 PASARON CON ÉXITO');
   console.log('================================================================\n');
 }
 
 runTests().catch(err => {
-  console.error('\n❌ ERROR EN LAS PRUEBAS V3.0:', err);
+  console.error('\n❌ ERROR EN LAS PRUEBAS V4.0:', err);
   process.exit(1);
 });

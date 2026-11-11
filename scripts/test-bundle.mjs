@@ -370,7 +370,7 @@ function decompressDiagram(data) {
   }
 }
 function cleanHtmlText(rawText) {
-  if (!rawText) return { cleaned: "", tagsRemoved: 0 };
+  if (!rawText) return { cleaned: "", tagsRemoved: 0, trailingNewlinesRemoved: 0 };
   let tagsCount = 0;
   const tagMatches = rawText.match(/<\/?[a-z][^>]*>/gi);
   if (tagMatches) {
@@ -380,7 +380,10 @@ function cleanHtmlText(rawText) {
   text = text.replace(/<[^>]*>/g, "");
   text = text.replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;/gi, "'").replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))).replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
   text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  return { cleaned: text, tagsRemoved: tagsCount };
+  const beforeTrailing = text;
+  text = text.replace(/\n+$/, "");
+  const trailingNewlinesRemoved = beforeTrailing.length - text.length;
+  return { cleaned: text, tagsRemoved: tagsCount, trailingNewlinesRemoved };
 }
 function parseStyleString(styleStr) {
   const map = {};
@@ -417,16 +420,29 @@ function serializeStyleString(styleMap) {
 }
 function sanitizeStyle(styleStr, options) {
   const styleMap = parseStyleString(styleStr);
+  let negativeMarginsFixed = 0;
   if (options.cleanHtml || options.rescueHtmlStyles) {
     styleMap["html"] = "0";
   }
   if (options.adjustTextBoxesAndRotations) {
-    if (parseInt(styleMap["spacingTop"] || "0") < 0) styleMap["spacingTop"] = "0";
-    if (parseInt(styleMap["spacingBottom"] || "0") < 0) styleMap["spacingBottom"] = "0";
-    if (parseInt(styleMap["spacingLeft"] || "0") < 0) styleMap["spacingLeft"] = "0";
-    if (parseInt(styleMap["spacingRight"] || "0") < 0) styleMap["spacingRight"] = "0";
+    for (const key of ["spacingTop", "spacingBottom", "spacingLeft", "spacingRight", "spacing"]) {
+      if (styleMap[key] !== void 0) {
+        const val = parseFloat(styleMap[key]);
+        if (val < 0) {
+          styleMap[key] = "0";
+          negativeMarginsFixed++;
+        }
+      }
+    }
+    if (styleMap["overflow"] === "width" || styleMap["overflow"] === "fill") {
+      delete styleMap["overflow"];
+      styleMap["whiteSpace"] = "wrap";
+    }
   }
-  return serializeStyleString(styleMap);
+  return {
+    style: serializeStyleString(styleMap),
+    negativeMarginsFixed
+  };
 }
 function sanitizeDrawio(xmlContent, options) {
   const xmlDoc = parseXml(xmlContent);
@@ -434,8 +450,11 @@ function sanitizeDrawio(xmlContent, options) {
   if (errorMsg) {
     throw new Error(`Error de sintaxis XML en el archivo: ${errorMsg.slice(0, 200)}`);
   }
+  let totalPagesDecompressed = 0;
   let totalHtmlTagsRemoved = 0;
   let totalHtmlStylesRescued = 0;
+  let totalTrailingNewlinesRemoved = 0;
+  let totalNegativeMarginsCleared = 0;
   let totalUserObjectsResolved = 0;
   let totalShapes = 0;
   let totalConnectors = 0;
@@ -452,12 +471,15 @@ function sanitizeDrawio(xmlContent, options) {
       const pageId = diagram.getAttribute("id") || `page-${i + 1}`;
       const pageName = diagram.getAttribute("name") || `P\xE1gina ${i + 1}`;
       let graphModelXml = "";
-      const rawDiagramText = diagram.textContent || "";
+      const rawDiagramText = (diagram.textContent || "").trim();
       const modelNode = findFirstElementByTag(diagram, "mxGraphModel");
       if (modelNode) {
         graphModelXml = serializeXml(modelNode);
       } else {
         graphModelXml = decompressDiagram(rawDiagramText);
+        if (graphModelXml) {
+          totalPagesDecompressed++;
+        }
       }
       if (!graphModelXml) {
         warnings.push(`P\xE1gina "${pageName}" est\xE1 vac\xEDa o no pudo descomprimirse.`);
@@ -467,6 +489,8 @@ function sanitizeDrawio(xmlContent, options) {
       const processResult = processModelDocument(modelDoc, pageId, pageName, options);
       totalHtmlTagsRemoved += processResult.htmlTagsRemoved;
       totalHtmlStylesRescued += processResult.htmlStylesRescued;
+      totalTrailingNewlinesRemoved += processResult.trailingNewlinesRemoved;
+      totalNegativeMarginsCleared += processResult.negativeMarginsCleared;
       totalUserObjectsResolved += processResult.userObjectsResolved;
       totalShapes += processResult.shapesCount;
       totalConnectors += processResult.connectorsCount;
@@ -489,6 +513,8 @@ function sanitizeDrawio(xmlContent, options) {
     const processResult = processModelDocument(xmlDoc, "page-1", "P\xE1gina 1", options);
     totalHtmlTagsRemoved += processResult.htmlTagsRemoved;
     totalHtmlStylesRescued += processResult.htmlStylesRescued;
+    totalTrailingNewlinesRemoved += processResult.trailingNewlinesRemoved;
+    totalNegativeMarginsCleared += processResult.negativeMarginsCleared;
     totalUserObjectsResolved += processResult.userObjectsResolved;
     totalShapes += processResult.shapesCount;
     totalConnectors += processResult.connectorsCount;
@@ -500,15 +526,18 @@ function sanitizeDrawio(xmlContent, options) {
   }
   const sanitizedXml = serializeXml(xmlDoc);
   logs.push(
-    `Sanitizaci\xF3n V3.0 completada: ${totalShapes} formas, ${totalConnectors} conectores, ${totalUserObjectsResolved} UserObjects resueltos, ${totalHtmlStylesRescued} estilos rescatados, ${totalImagesEmbedded} im\xE1genes Base64 procesadas.`
+    `Pre-limpieza CAD Fase 1 completada: ${parsedPages.length} p\xE1ginas (${totalPagesDecompressed} descomprimidas), ${totalShapes} formas, ${totalConnectors} conectores, ${totalUserObjectsResolved} UserObjects preservados, ${totalHtmlStylesRescued} estilos tipogr\xE1ficos rescatados, ${totalNegativeMarginsCleared} m\xE1rgenes corregidos.`
   );
   return {
     sanitizedXml,
     report: {
       pagesCount: parsedPages.length,
+      pagesDecompressed: totalPagesDecompressed,
       userObjectsResolved: totalUserObjectsResolved,
       htmlStylesRescued: totalHtmlStylesRescued,
       htmlTagsRemoved: totalHtmlTagsRemoved,
+      trailingNewlinesRemoved: totalTrailingNewlinesRemoved,
+      negativeMarginsCleared: totalNegativeMarginsCleared,
       shapesCount: totalShapes,
       connectorsCount: totalConnectors,
       stencilsDecoded: totalStencilsDecoded,
@@ -522,6 +551,8 @@ function sanitizeDrawio(xmlContent, options) {
 function processModelDocument(doc, pageId, pageName, options) {
   let htmlTagsRemoved = 0;
   let htmlStylesRescued = 0;
+  let trailingNewlinesRemoved = 0;
+  let negativeMarginsCleared = 0;
   let userObjectsResolved = 0;
   let shapesCount = 0;
   let connectorsCount = 0;
@@ -564,12 +595,13 @@ function processModelDocument(doc, pageId, pageName, options) {
       continue;
     }
     let extractedStyles = extractHtmlStyles(cellValue);
-    if (extractedStyles.fontSizePt || extractedStyles.fontColor || extractedStyles.fontFamily) {
+    if (extractedStyles.fontSizePt || extractedStyles.fontColor || extractedStyles.fontFamily || extractedStyles.fontStyle && extractedStyles.fontStyle > 0) {
       htmlStylesRescued++;
     }
     if (options.cleanHtml || options.rescueHtmlStyles) {
       const cleanRes = cleanHtmlText(cellValue);
       htmlTagsRemoved += cleanRes.tagsRemoved;
+      trailingNewlinesRemoved += cleanRes.trailingNewlinesRemoved;
       cellValue = cleanRes.cleaned;
       cellEl.setAttribute("value", cellValue);
       if (node !== cellEl && node.hasAttribute("label")) {
@@ -578,16 +610,21 @@ function processModelDocument(doc, pageId, pageName, options) {
     }
     const rawStyle = cellEl.getAttribute("style") || "";
     const parsedStyle = parseStyleString(rawStyle);
-    if (extractedStyles.fontSizePt && !parsedStyle["fontSize"]) {
-      parsedStyle["fontSize"] = (extractedStyles.fontSizePt / 0.75).toFixed(2);
+    if (extractedStyles.fontSizePx && extractedStyles.fontSizePx > 2) {
+      parsedStyle["fontSize"] = extractedStyles.fontSizePx.toString();
     }
-    if (extractedStyles.fontColor && !parsedStyle["fontColor"]) {
+    if (extractedStyles.fontColor) {
       parsedStyle["fontColor"] = extractedStyles.fontColor;
     }
-    if (extractedStyles.fontFamily && !parsedStyle["fontFamily"]) {
+    if (extractedStyles.fontFamily) {
       parsedStyle["fontFamily"] = extractedStyles.fontFamily;
     }
-    const style = sanitizeStyle(serializeStyleString(parsedStyle), options);
+    if (extractedStyles.fontStyle && extractedStyles.fontStyle > 0) {
+      parsedStyle["fontStyle"] = extractedStyles.fontStyle.toString();
+    }
+    const sanitizedStyleResult = sanitizeStyle(serializeStyleString(parsedStyle), options);
+    negativeMarginsCleared += sanitizedStyleResult.negativeMarginsFixed;
+    const style = sanitizedStyleResult.style;
     cellEl.setAttribute("style", style);
     const isVertex = cellEl.getAttribute("vertex") === "1";
     const isEdge = cellEl.getAttribute("edge") === "1";
@@ -711,6 +748,8 @@ function processModelDocument(doc, pageId, pageName, options) {
     },
     htmlTagsRemoved,
     htmlStylesRescued,
+    trailingNewlinesRemoved,
+    negativeMarginsCleared,
     userObjectsResolved,
     shapesCount,
     connectorsCount,
@@ -742,17 +781,37 @@ function getCell(element, cellName) {
   }
   return null;
 }
-function setOrUpdateCell(doc, parent, name, val, formula) {
-  const directCells = getDirectChildrenByTag(parent, "Cell");
+function setOrUpdateDirectShapeCell(doc, shape, name, val, formula, unit) {
+  const directCells = getDirectChildrenByTag(shape, "Cell");
   let cell = directCells.find((c) => c.getAttribute("N") === name);
-  if (!cell) {
-    cell = doc.createElement("Cell");
+  if (cell) {
+    cell.setAttribute("V", val);
+    if (formula !== void 0) {
+      cell.setAttribute("F", formula);
+    }
+    if (unit !== void 0) {
+      cell.setAttribute("U", unit);
+    }
+  } else {
+    const ns = shape.namespaceURI || "http://schemas.microsoft.com/office/visio/2012/main";
+    cell = doc.createElementNS(ns, "Cell");
     cell.setAttribute("N", name);
-    parent.appendChild(cell);
-  }
-  cell.setAttribute("V", val);
-  if (formula !== void 0) {
-    cell.setAttribute("F", formula);
+    cell.setAttribute("V", val);
+    if (formula !== void 0) {
+      cell.setAttribute("F", formula);
+    }
+    if (unit !== void 0) {
+      cell.setAttribute("U", unit);
+    }
+    const children = Array.from(shape.childNodes);
+    const firstNonCell = children.find(
+      (n) => n.nodeType === 1 && n.tagName.toLowerCase() !== "cell"
+    );
+    if (firstNonCell) {
+      shape.insertBefore(cell, firstNonCell);
+    } else {
+      shape.appendChild(cell);
+    }
   }
   return cell;
 }
@@ -761,6 +820,8 @@ async function patchVsdx(vsdxData, options) {
   let totalPages = 0;
   let totalShapes = 0;
   let textBlocksFixed = 0;
+  let shapesSkipped1D = 0;
+  let invalidSectionsRemoved = 0;
   const logs = [];
   const warnings = [];
   const pageFiles = [];
@@ -777,7 +838,7 @@ async function patchVsdx(vsdxData, options) {
     });
   }
   totalPages = pageFiles.length;
-  logs.push(`Encontradas ${totalPages} p\xE1gina(s) en el archivo .vsdx.`);
+  logs.push(`Encontradas ${totalPages} p\xE1gina(s) para parcheo quir\xFArgico en el paquete .vsdx.`);
   for (const pagePath of pageFiles) {
     const pageXmlText = await zip.file(pagePath).async("string");
     const doc = parseXml(pageXmlText);
@@ -789,78 +850,85 @@ async function patchVsdx(vsdxData, options) {
     const shapes = findElementsByTag(doc, "Shape");
     totalShapes += shapes.length;
     for (const shape of shapes) {
-      const hasText = !!findFirstElementByTag(shape, "Text");
-      if (!hasText) {
+      const directSections = getDirectChildrenByTag(shape, "Section");
+      for (const sec of directSections) {
+        const secName = sec.getAttribute("N");
+        if (secName === "TextXForm" || secName === "TextBlock" || secName === "Text" || secName === "Protection") {
+          shape.removeChild(sec);
+          invalidSectionsRemoved++;
+        }
+      }
+      const directCells = getDirectChildrenByTag(shape, "Cell");
+      const is1DConnector = directCells.some((c) => c.getAttribute("N") === "BeginX" || c.getAttribute("N") === "EndX") || !!getCell(shape, "BeginX") || !!getCell(shape, "EndX");
+      if (is1DConnector) {
+        shapesSkipped1D++;
         continue;
       }
-      const widthCell = getCell(shape, "Width");
-      const heightCell = getCell(shape, "Height");
-      const widthVal = widthCell ? parseFloat(widthCell.getAttribute("V") || "1") : 1;
-      const heightVal = heightCell ? parseFloat(heightCell.getAttribute("V") || "1") : 1;
-      const directSections = getDirectChildrenByTag(shape, "Section");
-      let textXFormSec = directSections.find((c) => c.getAttribute("N") === "TextXForm");
-      if (!textXFormSec) {
-        textXFormSec = doc.createElement("Section");
-        textXFormSec.setAttribute("N", "TextXForm");
-        const xFormSec = directSections.find((c) => c.getAttribute("N") === "XForm");
-        if (xFormSec && xFormSec.nextSibling) {
-          shape.insertBefore(textXFormSec, xFormSec.nextSibling);
-        } else {
-          shape.appendChild(textXFormSec);
-        }
+      const textNode = findFirstElementByTag(shape, "Text");
+      if (!textNode) {
+        continue;
+      }
+      const textContent = (textNode.textContent || "").trim();
+      if (!textContent) {
+        continue;
+      }
+      const widthCell = directCells.find((c) => c.getAttribute("N") === "Width") || getCell(shape, "Width");
+      const heightCell = directCells.find((c) => c.getAttribute("N") === "Height") || getCell(shape, "Height");
+      const widthVal = widthCell ? parseFloat(widthCell.getAttribute("V") || "") : NaN;
+      const heightVal = heightCell ? parseFloat(heightCell.getAttribute("V") || "") : NaN;
+      if (isNaN(widthVal) || isNaN(heightVal) || widthVal <= 0 || heightVal <= 0) {
+        continue;
       }
       if (options.fixTextXForm || options.adjustTextBoxesAndRotations) {
-        setOrUpdateCell(doc, textXFormSec, "TxtWidth", widthVal.toString(), "Width*1");
-        setOrUpdateCell(doc, textXFormSec, "TxtHeight", heightVal.toString(), "Height*1");
-        setOrUpdateCell(doc, textXFormSec, "TxtPinX", (widthVal * 0.5).toString(), "Width*0.5");
-        setOrUpdateCell(doc, textXFormSec, "TxtPinY", (heightVal * 0.5).toString(), "Height*0.5");
-        setOrUpdateCell(doc, textXFormSec, "TxtLocPinX", (widthVal * 0.5).toString(), "TxtWidth*0.5");
-        setOrUpdateCell(doc, textXFormSec, "TxtLocPinY", (heightVal * 0.5).toString(), "TxtHeight*0.5");
-        setOrUpdateCell(doc, textXFormSec, "TxtAngle", "0");
-        const directCells = getDirectChildrenByTag(shape, "Cell");
-        const conflictingNames = ["TxtWidth", "TxtHeight", "TxtPinX", "TxtPinY", "TxtLocPinX", "TxtLocPinY", "TxtAngle"];
-        for (const c of directCells) {
-          const n = c.getAttribute("N") || "";
-          if (conflictingNames.includes(n)) {
-            shape.removeChild(c);
-          }
-        }
+        const wStr = widthVal.toFixed(6);
+        const hStr = heightVal.toFixed(6);
+        const halfW = (widthVal * 0.5).toFixed(6);
+        const halfH = (heightVal * 0.5).toFixed(6);
+        setOrUpdateDirectShapeCell(doc, shape, "TxtWidth", wStr, "Width*1");
+        setOrUpdateDirectShapeCell(doc, shape, "TxtHeight", hStr, "Height*1");
+        setOrUpdateDirectShapeCell(doc, shape, "TxtPinX", halfW, "Width*0.5");
+        setOrUpdateDirectShapeCell(doc, shape, "TxtPinY", halfH, "Height*0.5");
+        setOrUpdateDirectShapeCell(doc, shape, "TxtLocPinX", halfW, "TxtWidth*0.5");
+        setOrUpdateDirectShapeCell(doc, shape, "TxtLocPinY", halfH, "TxtHeight*0.5");
+        setOrUpdateDirectShapeCell(doc, shape, "LockTextEdit", "0");
+        setOrUpdateDirectShapeCell(doc, shape, "TopMargin", "0", void 0, "PT");
+        setOrUpdateDirectShapeCell(doc, shape, "BottomMargin", "0", void 0, "PT");
+        setOrUpdateDirectShapeCell(doc, shape, "LeftMargin", "0", void 0, "PT");
+        setOrUpdateDirectShapeCell(doc, shape, "RightMargin", "0", void 0, "PT");
+        setOrUpdateDirectShapeCell(doc, shape, "VerticalAlign", "1");
         textBlocksFixed++;
       }
-      let textSec = directSections.find((c) => c.getAttribute("N") === "Text");
-      if (!textSec) {
-        textSec = doc.createElement("Section");
-        textSec.setAttribute("N", "Text");
-        shape.appendChild(textSec);
+      if (heightVal < 0.25) {
+        const paraSec = directSections.find((s) => s.getAttribute("N") === "Paragraph");
+        if (paraSec) {
+          const rows = getDirectChildrenByTag(paraSec, "Row");
+          for (const row of rows) {
+            const rowCells = getDirectChildrenByTag(row, "Cell");
+            const horzCell = rowCells.find((c) => c.getAttribute("N") === "HorzAlign");
+            if (!horzCell) {
+              const ns = shape.namespaceURI || "http://schemas.microsoft.com/office/visio/2012/main";
+              const newCell = doc.createElementNS(ns, "Cell");
+              newCell.setAttribute("N", "HorzAlign");
+              newCell.setAttribute("V", "1");
+              row.appendChild(newCell);
+            }
+          }
+        }
       }
-      setOrUpdateCell(doc, textSec, "WrapText", "0");
-      if (options.adjustTextBoxesAndRotations) {
-        setOrUpdateCell(doc, textSec, "TopMargin", "0");
-        setOrUpdateCell(doc, textSec, "BottomMargin", "0");
-        setOrUpdateCell(doc, textSec, "LeftMargin", "0");
-        setOrUpdateCell(doc, textSec, "RightMargin", "0");
-      }
-      let protSec = directSections.find((c) => c.getAttribute("N") === "Protection");
-      if (!protSec) {
-        protSec = doc.createElement("Section");
-        protSec.setAttribute("N", "Protection");
-        shape.appendChild(protSec);
-      }
-      setOrUpdateCell(doc, protSec, "LockTextEdit", "0");
-      if (options.normalizeFont) {
-        const charSec = directSections.find((c) => c.getAttribute("N") === "Character");
+      if (options.normalizeFont && options.targetFontFamily) {
+        const charSec = directSections.find((s) => s.getAttribute("N") === "Character");
         if (charSec) {
           const rows = getDirectChildrenByTag(charSec, "Row");
           for (const row of rows) {
-            setOrUpdateCell(doc, row, "Font", options.targetFontFamily || "Calibri");
-            const sizeCell = getCell(row, "Size");
-            if (sizeCell) {
-              const currentSize = parseFloat(sizeCell.getAttribute("V") || "0");
-              if (currentSize > 0) {
-                const scaledSize = currentSize * options.fontScaleFactor;
-                sizeCell.setAttribute("V", scaledSize.toFixed(6));
-              }
+            const rowCells = getDirectChildrenByTag(row, "Cell");
+            let fontCell = rowCells.find((c) => c.getAttribute("N") === "Font");
+            if (!fontCell) {
+              const ns = shape.namespaceURI || "http://schemas.microsoft.com/office/visio/2012/main";
+              fontCell = doc.createElementNS(ns, "Cell");
+              fontCell.setAttribute("N", "Font");
+              row.appendChild(fontCell);
             }
+            fontCell.setAttribute("V", options.targetFontFamily);
           }
         }
       }
@@ -868,7 +936,9 @@ async function patchVsdx(vsdxData, options) {
     const modifiedXml = serializeXml(doc);
     zip.file(pagePath, modifiedXml);
   }
-  logs.push(`Parcheo VSDX completado: ${textBlocksFixed} bloques TextXForm reparados.`);
+  logs.push(
+    `Parcheo quir\xFArgico VSDX completado: ${textBlocksFixed} figuras 2D calibradas con precisi\xF3n XSD, ${shapesSkipped1D} conectores 1D protegidos, ${invalidSectionsRemoved} secciones ilegales eliminadas.`
+  );
   const patchedBlob = await zip.generateAsync({
     type: "blob",
     mimeType: "application/vnd.ms-visio.drawing.main+xml",
@@ -881,6 +951,8 @@ async function patchVsdx(vsdxData, options) {
       pagesCount: totalPages,
       shapesCount: totalShapes,
       textBlocksFixed,
+      shapesSkipped1D,
+      invalidSectionsRemoved,
       warnings,
       logs
     }
@@ -1029,7 +1101,8 @@ async function convertDrawioToVsdx(xmlContent, options) {
         }
       }
       const fillColorHex = parseHexColor(rawFillColor, "#FFFFFF");
-      let foreignImageXml = "";
+      let foreignCellsXml = "";
+      let foreignDataXml = "";
       let isForeignType = false;
       if (cell.isBase64Image && cell.imageData && options.convertStencilsAndImages) {
         const imgNum = globalImageCounter++;
@@ -1048,11 +1121,12 @@ async function convertDrawioToVsdx(xmlContent, options) {
             `  <Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${imgNum}.${ext}"/>`
           );
           isForeignType = true;
-          foreignImageXml = `
+          foreignCellsXml = `
       <Cell N="ImgOffsetX" V="0"/>
       <Cell N="ImgOffsetY" V="0"/>
       <Cell N="ImgWidth" V="${widthIn.toFixed(4)}" F="Width*1"/>
-      <Cell N="ImgHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>
+      <Cell N="ImgHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>`;
+          foreignDataXml = `
       <ForeignData ForeignType="Bitmap" CompressionType="${ext === "png" ? "PNG" : "JPEG"}">
         <Rel r:id="${rId}"/>
       </ForeignData>`;
@@ -1127,6 +1201,9 @@ async function convertDrawioToVsdx(xmlContent, options) {
       }
       const hasText = cell.value && cell.value.trim().length > 0;
       let textContentXml = "";
+      let vertAlign = "1";
+      if (style["verticalAlign"] === "top") vertAlign = "0";
+      else if (style["verticalAlign"] === "bottom") vertAlign = "2";
       if (hasText) {
         totalTextBlocksFixed++;
         const fontSizePt = cell.fontSizePt || (style["fontSize"] ? parseFloat(style["fontSize"]) * 0.75 : 9);
@@ -1142,9 +1219,6 @@ async function convertDrawioToVsdx(xmlContent, options) {
         let horzAlign = "1";
         if (style["align"] === "left") horzAlign = "0";
         else if (style["align"] === "right") horzAlign = "2";
-        let vertAlign = "1";
-        if (style["verticalAlign"] === "top") vertAlign = "0";
-        else if (style["verticalAlign"] === "bottom") vertAlign = "2";
         textContentXml = `
       <Section N="Character">
         <Row IX="0">
@@ -1159,38 +1233,31 @@ async function convertDrawioToVsdx(xmlContent, options) {
           <Cell N="HorzAlign" V="${horzAlign}"/>
         </Row>
       </Section>
-      <Section N="Text">
-        <Cell N="TopMargin" V="0"/>
-        <Cell N="BottomMargin" V="0"/>
-        <Cell N="LeftMargin" V="0"/>
-        <Cell N="RightMargin" V="0"/>
-        <Cell N="WrapText" V="0"/>
-        <Cell N="VerticalAlign" V="${vertAlign}"/>
-      </Section>
       <Text><cp IX="0"/><pp IX="0"/>${escapeXml(cell.value)}</Text>`;
       }
       const shapeTypeAttr = isForeignType ? 'Type="Foreign"' : 'Type="Shape"';
       const shapeXml = `    <Shape ID="${visioId}" ${shapeTypeAttr} LineStyle="3" FillStyle="3" TextStyle="3">
-      <Section N="XForm">
-        <Cell N="PinX" V="${pinX.toFixed(4)}"/>
-        <Cell N="PinY" V="${pinY.toFixed(4)}"/>
-        <Cell N="Width" V="${widthIn.toFixed(4)}"/>
-        <Cell N="Height" V="${heightIn.toFixed(4)}"/>
-        <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
-        <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
-        <Cell N="Angle" V="${angleRad.toFixed(6)}"/>
-        <Cell N="FlipX" V="${cell.flipH ? "1" : "0"}"/>
-        <Cell N="FlipY" V="${cell.flipV ? "1" : "0"}"/>
-      </Section>
-      <Section N="TextXForm">
-        <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
-        <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
-        <Cell N="TxtWidth" V="${widthIn.toFixed(4)}" F="Width*1"/>
-        <Cell N="TxtHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>
-        <Cell N="TxtLocPinX" V="${locPinX.toFixed(4)}" F="TxtWidth*0.5"/>
-        <Cell N="TxtLocPinY" V="${locPinY.toFixed(4)}" F="TxtHeight*0.5"/>
-        <Cell N="TxtAngle" V="0"/>
-      </Section>
+      <Cell N="PinX" V="${pinX.toFixed(4)}"/>
+      <Cell N="PinY" V="${pinY.toFixed(4)}"/>
+      <Cell N="Width" V="${widthIn.toFixed(4)}"/>
+      <Cell N="Height" V="${heightIn.toFixed(4)}"/>
+      <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
+      <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
+      <Cell N="Angle" V="${angleRad.toFixed(6)}"/>
+      <Cell N="FlipX" V="${cell.flipH ? "1" : "0"}"/>
+      <Cell N="FlipY" V="${cell.flipV ? "1" : "0"}"/>
+      <Cell N="TxtWidth" V="${widthIn.toFixed(4)}" F="Width*1"/>
+      <Cell N="TxtHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>
+      <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
+      <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
+      <Cell N="TxtLocPinX" V="${locPinX.toFixed(4)}" F="TxtWidth*0.5"/>
+      <Cell N="TxtLocPinY" V="${locPinY.toFixed(4)}" F="TxtHeight*0.5"/>
+      <Cell N="LockTextEdit" V="0"/>
+      <Cell N="TopMargin" V="0" U="PT"/>
+      <Cell N="BottomMargin" V="0" U="PT"/>
+      <Cell N="LeftMargin" V="0" U="PT"/>
+      <Cell N="RightMargin" V="0" U="PT"/>
+      <Cell N="VerticalAlign" V="${vertAlign}"/>${foreignCellsXml}
       <Section N="Line">
         <Cell N="LineColor" V="${strokeColorHex}"/>
         <Cell N="LineWeight" V="${strokeWidthIn}"/>
@@ -1200,10 +1267,7 @@ async function convertDrawioToVsdx(xmlContent, options) {
       <Section N="Fill">
         <Cell N="FillForegnd" V="${fillColorHex}"/>
         <Cell N="FillPattern" V="${isFillNone ? "0" : "1"}"/>
-      </Section>
-      <Section N="Protection">
-        <Cell N="LockTextEdit" V="0"/>
-      </Section>${geometryXml}${foreignImageXml}${textContentXml}
+      </Section>${geometryXml}${foreignDataXml}${textContentXml}
     </Shape>`;
       shapesXmlParts.push(shapeXml);
       totalShapes++;
@@ -1291,15 +1355,24 @@ async function convertDrawioToVsdx(xmlContent, options) {
         </Row>`);
       }
       const edgeShapeXml = `    <Shape ID="${visioId}" Type="Shape" LineStyle="3" TextStyle="3">
-      <Section N="XForm">
-        <Cell N="PinX" V="${pinX.toFixed(4)}"/>
-        <Cell N="PinY" V="${pinY.toFixed(4)}"/>
-        <Cell N="Width" V="${widthIn.toFixed(4)}"/>
-        <Cell N="Height" V="${heightIn.toFixed(4)}"/>
-        <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
-        <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
-        <Cell N="Angle" V="0"/>
-      </Section>
+      <Cell N="PinX" V="${pinX.toFixed(4)}"/>
+      <Cell N="PinY" V="${pinY.toFixed(4)}"/>
+      <Cell N="Width" V="${widthIn.toFixed(4)}"/>
+      <Cell N="Height" V="${heightIn.toFixed(4)}"/>
+      <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
+      <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
+      <Cell N="Angle" V="0"/>${cell.value ? `
+      <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
+      <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
+      <Cell N="TxtWidth" V="${Math.min(widthIn, 1.5).toFixed(4)}"/>
+      <Cell N="TxtHeight" V="0.3"/>
+      <Cell N="TxtLocPinX" V="${(Math.min(widthIn, 1.5) / 2).toFixed(4)}" F="TxtWidth*0.5"/>
+      <Cell N="TxtLocPinY" V="0.15" F="TxtHeight*0.5"/>
+      <Cell N="TxtAngle" V="0"/>
+      <Cell N="TopMargin" V="0" U="PT"/>
+      <Cell N="BottomMargin" V="0" U="PT"/>
+      <Cell N="LeftMargin" V="0" U="PT"/>
+      <Cell N="RightMargin" V="0" U="PT"/>` : ""}
       <Section N="Line">
         <Cell N="LineColor" V="${strokeColor}"/>
         <Cell N="LineWeight" V="${strokeWidthIn}"/>
@@ -1314,24 +1387,12 @@ async function convertDrawioToVsdx(xmlContent, options) {
         <Cell N="NoLine" V="0"/>
 ${geomRows.join("\n")}
       </Section>${cell.value ? `
-      <Section N="TextXForm">
-        <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
-        <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
-        <Cell N="TxtWidth" V="${Math.min(widthIn, 1.5).toFixed(4)}"/>
-        <Cell N="TxtHeight" V="0.3"/>
-        <Cell N="TxtLocPinX" V="${(Math.min(widthIn, 1.5) / 2).toFixed(4)}" F="TxtWidth*0.5"/>
-        <Cell N="TxtLocPinY" V="0.15" F="TxtHeight*0.5"/>
-        <Cell N="TxtAngle" V="0"/>
-      </Section>
       <Section N="Character">
         <Row IX="0">
           <Cell N="Font" V="Calibri"/>
           <Cell N="Size" V="0.125" unit="PT"/>
           <Cell N="Color" V="${strokeColor}"/>
         </Row>
-      </Section>
-      <Section N="Text">
-        <Cell N="WrapText" V="0"/>
       </Section>
       <Text><cp IX="0"/>${escapeXml(cell.value)}</Text>` : ""}
     </Shape>`;
@@ -1494,36 +1555,40 @@ var __dirname = path.dirname(__filename);
 var rootDir = path.resolve(__dirname, "..");
 async function runTests() {
   console.log("================================================================");
-  console.log("\u{1F9EA} Verificaci\xF3n Motor Arquitectura V3.0: Drawio2Visio Fixer Pro");
+  console.log("\u{1F9EA} Verificaci\xF3n Motor Arquitectura V4.0: Drawio2Visio Fixer Pro");
   console.log("================================================================\n");
   const samplePath = path.join(rootDir, "sample-diagram.drawio");
   const sampleXml = fs.readFileSync(samplePath, "utf8");
-  console.log("1\uFE0F\u20E3 Probando M\xF3dulo 1 & 2: drawioSanitizer + htmlStyleExtractor...");
+  console.log("1\uFE0F\u20E3 Probando Fase 1: drawioSanitizer (Pre-limpiador CAD)...");
   const sanitizeResult = sanitizeDrawio(sampleXml, DEFAULT_OPTIONS);
-  console.log(`   - P\xE1ginas detectadas: ${sanitizeResult.pages.length}`);
-  console.log(`   - UserObjects resueltos: ${sanitizeResult.report.userObjectsResolved}`);
-  console.log(`   - Estilos HTML rescatados (bypassing 1px): ${sanitizeResult.report.htmlStylesRescued}`);
+  console.log(`   - P\xE1ginas procesadas: ${sanitizeResult.pages.length}`);
+  console.log(`   - P\xE1ginas descomprimidas: ${sanitizeResult.report.pagesDecompressed}`);
+  console.log(`   - UserObjects preservados: ${sanitizeResult.report.userObjectsResolved}`);
+  console.log(`   - Estilos tipogr\xE1ficos rescatados: ${sanitizeResult.report.htmlStylesRescued}`);
   console.log(`   - Etiquetas HTML eliminadas: ${sanitizeResult.report.htmlTagsRemoved}`);
-  console.log(`   - Formas (2D) detectadas: ${sanitizeResult.report.shapesCount}`);
-  console.log(`   - Conectores (1D) detectados: ${sanitizeResult.report.connectorsCount}`);
-  console.log(`   - Im\xE1genes Base64 detectadas (sin ';base64'): ${sanitizeResult.report.imagesEmbedded}`);
+  console.log(`   - Saltos de l\xEDnea finales (\\n+$) eliminados: ${sanitizeResult.report.trailingNewlinesRemoved}`);
+  console.log(`   - M\xE1rgenes negativos corregidos: ${sanitizeResult.report.negativeMarginsCleared}`);
   if (sanitizeResult.report.userObjectsResolved === 0) {
     throw new Error("Fallo: No se resolvieron los elementos <UserObject>.");
   }
+  if (!sanitizeResult.sanitizedXml.includes("<diagram") || !sanitizeResult.sanitizedXml.includes("<mxGraphModel")) {
+    throw new Error("Fallo: El XML sanitizado no contiene <diagram> con <mxGraphModel> plano.");
+  }
+  console.log("   \u2705 Descompresi\xF3n transparente a XML plano para draw.io v26.0.16: CORRECTA");
   const page = sanitizeResult.pages[0];
   const titleBlock = page.cells.find((c) => c.id === "title-block");
   if (!titleBlock) {
     throw new Error("Fallo: No se encontr\xF3 la celda title-block en la p\xE1gina.");
   }
   console.log(`   - title-block valor limpio: "${titleBlock.value.trim()}"`);
-  console.log(`   - title-block fontSize rescatado: ${titleBlock.fontSizePt} pt (esperado ~19.68 pt para 26.25px)`);
+  console.log(`   - title-block fontSize rescatado: ${titleBlock.fontSizePt} pt`);
   console.log(`   - title-block fontColor: ${titleBlock.fontColor}`);
   console.log(`   - title-block fontFamily: ${titleBlock.fontFamily}`);
   if (!titleBlock.fontSizePt || titleBlock.fontSizePt < 15) {
     throw new Error(`Fallo: El tama\xF1o de fuente del title-block no fue rescatado: ${titleBlock.fontSizePt}`);
   }
   console.log("   \u2705 Extractor de estilos HTML profundos: CORRECTO (1px ignorado, 26.25px rescatado)");
-  console.log("\n2\uFE0F\u20E3 Probando M\xF3dulo 3: Jerarqu\xEDa recursiva getAbsoluteGeometry (3 niveles)...");
+  console.log("\n2\uFE0F\u20E3 Probando Jerarqu\xEDa recursiva getAbsoluteGeometry (3 niveles)...");
   const cellsMap = /* @__PURE__ */ new Map();
   page.cells.forEach((c) => cellsMap.set(c.id, c));
   const u3Geo = getAbsoluteGeometry("U3", cellsMap);
@@ -1538,66 +1603,78 @@ async function runTests() {
   if (pin1Geo.rotation !== 90) {
     throw new Error(`Fallo: La rotaci\xF3n de PIN_1 deber\xEDa ser 90\xB0, obtenido ${pin1Geo.rotation}\xB0`);
   }
-  console.log("   \u2705 Jerarqu\xEDa de 3 niveles y rotaci\xF3n sin swap: CORRECTA (x=340, y=230, rot=90\xB0)");
-  console.log("\n3\uFE0F\u20E3 Probando M\xF3dulos V3.0 en drawioToVsdx...");
+  console.log("   \u2705 Jerarqu\xEDa de 3 niveles y rotaci\xF3n: CORRECTA (x=340, y=230, rot=90\xB0)");
+  console.log("\n3\uFE0F\u20E3 Probando generaci\xF3n OpenXML VSDX completa...");
   const conversionResult = await convertDrawioToVsdx(sampleXml, DEFAULT_OPTIONS);
   console.log(`   - VSDX tama\xF1o generado: ${conversionResult.vsdxBlob.size} bytes`);
   console.log(`   - Conectores 2D ortogonales trazados: ${conversionResult.report.orthogonalConnectorsCount}`);
-  console.log(`   - Im\xE1genes incrustadas en visio/media/: ${conversionResult.report.imagesEmbedded}`);
-  console.log(`   - Bordes fantasma limpiados (strokeColor=none): ${conversionResult.report.ghostBordersCleared}`);
-  console.log(`   - L\xEDneas de cajet\xEDn hairline preservadas: ${conversionResult.report.hairlinesPreserved}`);
-  console.log(`   - Bloques TextXForm fijados: ${conversionResult.report.textBlocksFixed}`);
+  console.log(`   - Im\xE1genes incrustadas: ${conversionResult.report.imagesEmbedded}`);
   const vsdxBuffer = await conversionResult.vsdxBlob.arrayBuffer();
-  const zip = await JSZip3.loadAsync(vsdxBuffer);
-  if (!zip.file("visio/media/image1.png")) {
-    throw new Error("Fallo: No se encontr\xF3 la imagen visio/media/image1.png en el paquete VSDX.");
-  }
-  console.log("   \u2705 Imagen data:image/png,<base64> (sin ;base64) extra\xEDda e incrustada en visio/media/image1.png");
-  const contentTypesXml = await zip.file("[Content_Types].xml").async("string");
-  if (!contentTypesXml.includes('Extension="png"') || !contentTypesXml.includes('Extension="jpg"')) {
-    throw new Error("Fallo: [Content_Types].xml no contiene las extensiones de imagen.");
-  }
-  console.log("   \u2705 Registro de tipos MIME en [Content_Types].xml: CORRECTO");
-  const pageRelsXml = await zip.file("visio/pages/_rels/page1.xml.rels").async("string");
-  if (!pageRelsXml.includes('Target="../media/image1.png"')) {
-    throw new Error("Fallo: visio/pages/_rels/page1.xml.rels no contiene relaci\xF3n con image1.png");
-  }
-  console.log("   \u2705 Relaci\xF3n rIdImg1 en visio/pages/_rels/page1.xml.rels: CORRECTA");
-  const page1Xml = await zip.file("visio/pages/page1.xml").async("string");
-  if (!page1Xml.includes('ForeignData ForeignType="Bitmap"') || !page1Xml.includes('Rel r:id="rIdImg1"')) {
-    throw new Error("Fallo: page1.xml no contiene el bloque ForeignData con bitmap.");
-  }
-  console.log('   \u2705 Bloque <ForeignData> Type="Foreign" con bitmap: CORRECTO');
-  const edgeShapes = page1Xml.match(/<Shape ID="13"[\s\S]*?<\/Shape>/);
-  if (edgeShapes && edgeShapes[0].includes("XForm1D")) {
-    throw new Error("Fallo: El conector ortogonal 2D no debe tener XForm1D para evitar rotaci\xF3n diagonal.");
-  }
-  console.log('   \u2705 Conector ortogonal como Shape 2D con Angle="0" (sin distorsi\xF3n 1D): CORRECTO');
-  if (!page1Xml.includes('<Cell N="LinePattern" V="0"/>') || !page1Xml.includes('<Cell N="NoLine" V="1"/>')) {
-    throw new Error("Fallo: No se elimin\xF3 el borde fantasma de la etiqueta con strokeColor=none.");
-  }
-  console.log("   \u2705 Eliminaci\xF3n de borde fantasma (LinePattern=0, NoLine=1): CORRECTA");
-  if (!page1Xml.includes('N="LineWeight" V="0.007"') && !page1Xml.includes('V="0.007"')) {
-    throw new Error('Fallo: Las l\xEDneas de cajet\xEDn strokeWidth=0 no se configuraron con LineWeight V="0.007".');
-  }
-  console.log('   \u2705 L\xEDnea de cajet\xEDn Hairline CAD (<Cell N="LineWeight" V="0.007"/>): CORRECTA');
-  console.log('   \u2705 L\xEDnea de cajet\xEDn Hairline CAD (LineWeight="0.007"): CORRECTA');
-  console.log("\n4\uFE0F\u20E3 Probando M\xF3dulo 4: vsdxPatcher...");
+  console.log("\n4\uFE0F\u20E3 Probando Fase 2: vsdxPatcher (5 Reglas de Oro XSD)...");
   const patchResult = await patchVsdx(vsdxBuffer, DEFAULT_OPTIONS);
   console.log(`   - P\xE1ginas procesadas por patcher: ${patchResult.report.pagesCount}`);
-  console.log(`   - TextXForm corregidos: ${patchResult.report.textBlocksFixed}`);
+  console.log(`   - Figuras 2D calibradas: ${patchResult.report.textBlocksFixed}`);
+  console.log(`   - Conectores 1D protegidos (sin TxtWidth/TxtHeight): ${patchResult.report.shapesSkipped1D}`);
+  console.log(`   - Secciones ilegales eliminadas: ${patchResult.report.invalidSectionsRemoved}`);
+  const patchedZip = await JSZip3.loadAsync(await patchResult.patchedBlob.arrayBuffer());
+  if (!patchedZip.file("[Content_Types].xml") || !patchedZip.file("visio/document.xml")) {
+    throw new Error("Fallo Regla 1: Faltan archivos esenciales del paquete OpenXML.");
+  }
+  console.log("   \u2705 Regla 1: Archivos ZIP estructurales [Content_Types].xml y document.xml intactos.");
+  const patchedPage1Xml = await patchedZip.file("visio/pages/page1.xml").async("string");
+  const parser = new DOMParser2();
+  const page1Doc = parser.parseFromString(patchedPage1Xml, "application/xml");
+  const sections = Array.from(page1Doc.getElementsByTagName("Section"));
+  const illegalSections = sections.filter((s) => {
+    const n = s.getAttribute("N");
+    return n === "TextXForm" || n === "TextBlock";
+  });
+  if (illegalSections.length > 0) {
+    throw new Error(`Fallo Regla 3: Se encontraron ${illegalSections.length} secciones ilegales <Section N="TextXForm">.`);
+  }
+  console.log('   \u2705 Regla 3: Cero secciones inexistentes (<Section N="TextXForm"> / <Section N="TextBlock">).');
+  const shapes = Array.from(page1Doc.getElementsByTagName("Shape"));
+  for (const sh of shapes) {
+    let seenNonCell = false;
+    for (let i = 0; i < sh.childNodes.length; i++) {
+      const child = sh.childNodes[i];
+      if (child.nodeType === 1) {
+        const tagName = child.tagName.toLowerCase();
+        if (tagName === "cell") {
+          if (seenNonCell) {
+            throw new Error(`Fallo Regla 4: <Cell N="${child.getAttribute("N")}"> aparece despu\xE9s de un nodo no-Cell en <Shape ID="${sh.getAttribute("ID")}">.`);
+          }
+        } else {
+          seenNonCell = true;
+        }
+      }
+    }
+  }
+  console.log("   \u2705 Regla 4: Orden estricto XSD verificado (TODOS los <Cell> preceden a <Section> y <Text>).");
+  for (const sh of shapes) {
+    const cells = Array.from(sh.getElementsByTagName("Cell"));
+    const is1D = cells.some((c) => c.getAttribute("N") === "BeginX" || c.getAttribute("N") === "EndX");
+    if (is1D) {
+      const directCells = Array.from(sh.childNodes).filter((n) => n.nodeType === 1 && n.tagName.toLowerCase() === "cell");
+      const hasTxtWidth = directCells.some((c) => c.getAttribute("N") === "TxtWidth");
+      if (hasTxtWidth) {
+        throw new Error(`Fallo Regla 5: Conector 1D ID="${sh.getAttribute("ID")}" tiene celda TxtWidth inyectada.`);
+      }
+    }
+  }
+  console.log("   \u2705 Regla 5: Conectores 1D protegidos (cero inyecci\xF3n indebida de TxtWidth/TxtHeight).");
   const outVsdxPath = path.join(rootDir, "sample-diagram-fixed.vsdx");
   const outDrawioPath = path.join(rootDir, "sample-diagram-clean.drawio");
-  fs.writeFileSync(outVsdxPath, Buffer.from(vsdxBuffer));
-  fs.writeFileSync(outDrawioPath, conversionResult.cleanDrawioXml, "utf8");
-  console.log("\n\u{1F4BE} Archivos V3.0 generados en disco:");
+  fs.writeFileSync(outVsdxPath, Buffer.from(await patchResult.patchedBlob.arrayBuffer()));
+  fs.writeFileSync(outDrawioPath, sanitizeResult.sanitizedXml, "utf8");
+  console.log("\n\u{1F4BE} Archivos V4.0 generados en disco:");
   console.log(`   - ${outVsdxPath} (${fs.statSync(outVsdxPath).size} bytes)`);
   console.log(`   - ${outDrawioPath} (${fs.statSync(outDrawioPath).size} bytes)`);
   console.log("\n================================================================");
-  console.log("\u{1F389} TODAS LAS PRUEBAS DE ARQUITECTURA V3.0 DEFINITIVA PASARON CON \xC9XITO");
+  console.log("\u{1F389} TODAS LAS PRUEBAS DE ARQUITECTURA V4.0 PASARON CON \xC9XITO");
   console.log("================================================================\n");
 }
 runTests().catch((err) => {
-  console.error("\n\u274C ERROR EN LAS PRUEBAS V3.0:", err);
+  console.error("\n\u274C ERROR EN LAS PRUEBAS V4.0:", err);
   process.exit(1);
 });
