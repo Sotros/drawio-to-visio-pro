@@ -302,7 +302,10 @@ export function sanitizeDrawio(
     throw new Error('El archivo no contiene un formato de diagrama draw.io válido (<mxfile> o <mxGraphModel>).');
   }
 
-  const sanitizedXml = serializeXml(xmlDoc);
+  const rawXml = serializeXml(xmlDoc);
+  const sanitizedXml = rawXml.startsWith('<?xml')
+    ? rawXml
+    : `<?xml version="1.0" encoding="UTF-8"?>\n${rawXml}`;
 
   logs.push(
     `Pre-limpieza CAD Fase 1 completada: ${parsedPages.length} páginas (${totalPagesDecompressed} descomprimidas), ${totalShapes} formas, ${totalConnectors} conectores, ${totalUserObjectsResolved} UserObjects preservados, ${totalHtmlStylesRescued} estilos tipográficos rescatados, ${totalNegativeMarginsCleared} márgenes corregidos.`

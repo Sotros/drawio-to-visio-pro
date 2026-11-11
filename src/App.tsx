@@ -58,7 +58,7 @@ export default function App() {
     try {
       const textContent = await file.text();
       const sanitizeResult = sanitizeDrawio(textContent, options);
-      const cleanBlob = new Blob([sanitizeResult.sanitizedXml], { type: 'application/xml' });
+      const cleanBlob = new Blob([sanitizeResult.sanitizedXml], { type: 'application/xml;charset=utf-8' });
 
       setDrawioFile({
         id: fileId,

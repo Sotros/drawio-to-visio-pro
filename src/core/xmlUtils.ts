@@ -52,3 +52,18 @@ export function getFirstDirectChildByTag(parent: Element, tagName: string): Elem
   return null;
 }
 
+/**
+ * Strict numeric sanitizer for Visio OpenXML attributes.
+ * Prevents "NaN", "Infinity", "undefined" from ever reaching Visio XML attributes.
+ */
+export function safeNum(val: number | string | undefined | null, fallback = 0): string {
+  if (val === undefined || val === null || val === '') {
+    return fallback.toString();
+  }
+  const n = typeof val === 'number' ? val : parseFloat(val);
+  if (Number.isFinite(n)) {
+    return Number(n.toFixed(4)).toString();
+  }
+  return fallback.toString();
+}
+

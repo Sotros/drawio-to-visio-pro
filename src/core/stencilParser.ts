@@ -1,5 +1,6 @@
 import pako from 'pako';
 import { StencilDefinition, StencilPathCommand } from '../types';
+import { safeNum } from './xmlUtils';
 
 /**
  * Decodes base64-compressed draw.io stencil string:
@@ -123,8 +124,8 @@ export function stencilToVisioGeometry(
       startY = vy;
 
       rows.push(`        <Row T="MoveTo" IX="${rowIndex++}">
-          <Cell N="X" V="${vx.toFixed(4)}" F="Width*${nx.toFixed(4)}"/>
-          <Cell N="Y" V="${vy.toFixed(4)}" F="Height*${ny.toFixed(4)}"/>
+          <Cell N="X" V="${safeNum(vx)}" F="Width*${safeNum(nx)}"/>
+          <Cell N="Y" V="${safeNum(vy)}" F="Height*${safeNum(ny)}"/>
         </Row>`);
     } else if (cmd.type === 'line') {
       const nx = cmd.points[0].x / sw;
@@ -133,8 +134,8 @@ export function stencilToVisioGeometry(
       const vy = ny * heightIn;
 
       rows.push(`        <Row T="LineTo" IX="${rowIndex++}">
-          <Cell N="X" V="${vx.toFixed(4)}" F="Width*${nx.toFixed(4)}"/>
-          <Cell N="Y" V="${vy.toFixed(4)}" F="Height*${ny.toFixed(4)}"/>
+          <Cell N="X" V="${safeNum(vx)}" F="Width*${safeNum(nx)}"/>
+          <Cell N="Y" V="${safeNum(vy)}" F="Height*${safeNum(ny)}"/>
         </Row>`);
     } else if (cmd.type === 'quad' || cmd.type === 'curve') {
       // Approximate curves with destination LineTo (or multi-segment) for maximum Visio stability
@@ -145,8 +146,8 @@ export function stencilToVisioGeometry(
       const vy = ny * heightIn;
 
       rows.push(`        <Row T="LineTo" IX="${rowIndex++}">
-          <Cell N="X" V="${vx.toFixed(4)}" F="Width*${nx.toFixed(4)}"/>
-          <Cell N="Y" V="${vy.toFixed(4)}" F="Height*${ny.toFixed(4)}"/>
+          <Cell N="X" V="${safeNum(vx)}" F="Width*${safeNum(nx)}"/>
+          <Cell N="Y" V="${safeNum(vy)}" F="Height*${safeNum(ny)}"/>
         </Row>`);
     } else if (cmd.type === 'rect') {
       const rx = cmd.points[0].x;
@@ -160,11 +161,11 @@ export function stencilToVisioGeometry(
       const p3 = { nx: (rx + rw) / sw, ny: 1 - (ry + rh) / sh };
       const p4 = { nx: rx / sw, ny: 1 - (ry + rh) / sh };
 
-      rows.push(`        <Row T="MoveTo" IX="${rowIndex++}"><Cell N="X" V="${(p1.nx * widthIn).toFixed(4)}" F="Width*${p1.nx.toFixed(4)}"/><Cell N="Y" V="${(p1.ny * heightIn).toFixed(4)}" F="Height*${p1.ny.toFixed(4)}"/></Row>`);
-      rows.push(`        <Row T="LineTo" IX="${rowIndex++}"><Cell N="X" V="${(p2.nx * widthIn).toFixed(4)}" F="Width*${p2.nx.toFixed(4)}"/><Cell N="Y" V="${(p2.ny * heightIn).toFixed(4)}" F="Height*${p2.ny.toFixed(4)}"/></Row>`);
-      rows.push(`        <Row T="LineTo" IX="${rowIndex++}"><Cell N="X" V="${(p3.nx * widthIn).toFixed(4)}" F="Width*${p3.nx.toFixed(4)}"/><Cell N="Y" V="${(p3.ny * heightIn).toFixed(4)}" F="Height*${p3.ny.toFixed(4)}"/></Row>`);
-      rows.push(`        <Row T="LineTo" IX="${rowIndex++}"><Cell N="X" V="${(p4.nx * widthIn).toFixed(4)}" F="Width*${p4.nx.toFixed(4)}"/><Cell N="Y" V="${(p4.ny * heightIn).toFixed(4)}" F="Height*${p4.ny.toFixed(4)}"/></Row>`);
-      rows.push(`        <Row T="LineTo" IX="${rowIndex++}"><Cell N="X" V="${(p1.nx * widthIn).toFixed(4)}" F="Width*${p1.nx.toFixed(4)}"/><Cell N="Y" V="${(p1.ny * heightIn).toFixed(4)}" F="Height*${p1.ny.toFixed(4)}"/></Row>`);
+      rows.push(`        <Row T="MoveTo" IX="${rowIndex++}"><Cell N="X" V="${safeNum(p1.nx * widthIn)}" F="Width*${safeNum(p1.nx)}"/><Cell N="Y" V="${safeNum(p1.ny * heightIn)}" F="Height*${safeNum(p1.ny)}"/></Row>`);
+      rows.push(`        <Row T="LineTo" IX="${rowIndex++}"><Cell N="X" V="${safeNum(p2.nx * widthIn)}" F="Width*${safeNum(p2.nx)}"/><Cell N="Y" V="${safeNum(p2.ny * heightIn)}" F="Height*${safeNum(p2.ny)}"/></Row>`);
+      rows.push(`        <Row T="LineTo" IX="${rowIndex++}"><Cell N="X" V="${safeNum(p3.nx * widthIn)}" F="Width*${safeNum(p3.nx)}"/><Cell N="Y" V="${safeNum(p3.ny * heightIn)}" F="Height*${safeNum(p3.ny)}"/></Row>`);
+      rows.push(`        <Row T="LineTo" IX="${rowIndex++}"><Cell N="X" V="${safeNum(p4.nx * widthIn)}" F="Width*${safeNum(p4.nx)}"/><Cell N="Y" V="${safeNum(p4.ny * heightIn)}" F="Height*${safeNum(p4.ny)}"/></Row>`);
+      rows.push(`        <Row T="LineTo" IX="${rowIndex++}"><Cell N="X" V="${safeNum(p1.nx * widthIn)}" F="Width*${safeNum(p1.nx)}"/><Cell N="Y" V="${safeNum(p1.ny * heightIn)}" F="Height*${safeNum(p1.ny)}"/></Row>`);
     } else if (cmd.type === 'ellipse') {
       const cx = (cmd.points[0].x + (cmd.w || 0) / 2) / sw;
       const cy = 1 - (cmd.points[0].y + (cmd.h || 0) / 2) / sh;
@@ -172,17 +173,17 @@ export function stencilToVisioGeometry(
       const eh = (cmd.h || 0) / sh;
 
       rows.push(`        <Row T="Ellipse" IX="${rowIndex++}">
-          <Cell N="X" V="${(cx * widthIn).toFixed(4)}" F="Width*${cx.toFixed(4)}"/>
-          <Cell N="Y" V="${(cy * heightIn).toFixed(4)}" F="Height*${cy.toFixed(4)}"/>
-          <Cell N="A" V="${((cx + ew / 2) * widthIn).toFixed(4)}" F="Width*${(cx + ew / 2).toFixed(4)}"/>
-          <Cell N="B" V="${(cy * heightIn).toFixed(4)}" F="Height*${cy.toFixed(4)}"/>
-          <Cell N="C" V="${(cx * widthIn).toFixed(4)}" F="Width*${cx.toFixed(4)}"/>
-          <Cell N="D" V="${((cy + eh / 2) * heightIn).toFixed(4)}" F="Height*${(cy + eh / 2).toFixed(4)}"/>
+          <Cell N="X" V="${safeNum(cx * widthIn)}" F="Width*${safeNum(cx)}"/>
+          <Cell N="Y" V="${safeNum(cy * heightIn)}" F="Height*${safeNum(cy)}"/>
+          <Cell N="A" V="${safeNum((cx + ew / 2) * widthIn)}" F="Width*${safeNum(cx + ew / 2)}"/>
+          <Cell N="B" V="${safeNum(cy * heightIn)}" F="Height*${safeNum(cy)}"/>
+          <Cell N="C" V="${safeNum(cx * widthIn)}" F="Width*${safeNum(cx)}"/>
+          <Cell N="D" V="${safeNum((cy + eh / 2) * heightIn)}" F="Height*${safeNum(cy + eh / 2)}"/>
         </Row>`);
     } else if (cmd.type === 'close') {
       rows.push(`        <Row T="LineTo" IX="${rowIndex++}">
-          <Cell N="X" V="${startX.toFixed(4)}"/>
-          <Cell N="Y" V="${startY.toFixed(4)}"/>
+          <Cell N="X" V="${safeNum(startX)}"/>
+          <Cell N="Y" V="${safeNum(startY)}"/>
         </Row>`);
     }
   }
@@ -193,9 +194,9 @@ export function stencilToVisioGeometry(
         <Cell N="NoFill" V="0"/>
         <Cell N="NoLine" V="0"/>
         <Row T="MoveTo" IX="1"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="0" F="Height*0"/></Row>
-        <Row T="LineTo" IX="2"><Cell N="X" V="${widthIn.toFixed(4)}" F="Width*1"/><Cell N="Y" V="0" F="Height*0"/></Row>
-        <Row T="LineTo" IX="3"><Cell N="X" V="${widthIn.toFixed(4)}" F="Width*1"/><Cell N="Y" V="${heightIn.toFixed(4)}" F="Height*1"/></Row>
-        <Row T="LineTo" IX="4"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="${heightIn.toFixed(4)}" F="Height*1"/></Row>
+        <Row T="LineTo" IX="2"><Cell N="X" V="${safeNum(widthIn, 0.01)}" F="Width*1"/><Cell N="Y" V="0" F="Height*0"/></Row>
+        <Row T="LineTo" IX="3"><Cell N="X" V="${safeNum(widthIn, 0.01)}" F="Width*1"/><Cell N="Y" V="${safeNum(heightIn, 0.01)}" F="Height*1"/></Row>
+        <Row T="LineTo" IX="4"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="${safeNum(heightIn, 0.01)}" F="Height*1"/></Row>
         <Row T="LineTo" IX="5"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="0" F="Height*0"/></Row>
       </Section>`;
   }

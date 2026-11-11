@@ -6,7 +6,8 @@ import {
   getParserError,
   findElementsByTag,
   findFirstElementByTag,
-  getDirectChildrenByTag
+  getDirectChildrenByTag,
+  safeNum
 } from './xmlUtils';
 
 /**
@@ -39,9 +40,6 @@ function getCell(element: Element, cellName: string): Element | null {
 
 /**
  * Sets or updates a direct child <Cell> inside <Shape>.
- * STRICT XSD RULE: In Visio OpenXML Schema, ALL direct child <Cell> elements
- * MUST appear BEFORE any <Section>, <Text>, <ForeignData>, or <Shapes> elements.
- * Inserting a <Cell> after <Text> or <Section> causes Visio to discard the page (blank page).
  */
 function setOrUpdateDirectShapeCell(
   doc: Document,
@@ -73,21 +71,71 @@ function setOrUpdateDirectShapeCell(
     if (unit !== undefined) {
       cell.setAttribute('U', unit);
     }
-
-    // STRICT XSD ORDER: Insert BEFORE the first child node that is not a <Cell>
-    const children = Array.from(shape.childNodes);
-    const firstNonCell = children.find(
-      n => n.nodeType === 1 && (n as Element).tagName.toLowerCase() !== 'cell'
-    );
-
-    if (firstNonCell) {
-      shape.insertBefore(cell, firstNonCell);
-    } else {
-      shape.appendChild(cell);
-    }
+    shape.appendChild(cell);
   }
 
   return cell;
+}
+
+/**
+ * STRICT XSD NORMALIZER:
+ * Reorders all child nodes of <Shape> into the 3 mandatory OpenXML blocks:
+ *   BLOQUE 1: ONLY <Cell> elements (direct children of Shape)
+ *   BLOQUE 2: ONLY <Section> elements (Character, Paragraph, Geometry, etc.)
+ *   BLOQUE 3: <Text> element ALWAYS AT THE VERY END OF <Shape>
+ *
+ * Removes illegal sections (<Section N="TextXForm">, <Section N="TextBlock">, <Section N="Text">, <Section N="Protection">).
+ */
+function reorderShapeChildrenStrict(shape: Element): void {
+  const children = Array.from(shape.childNodes);
+
+  const cells: Element[] = [];
+  const sections: Element[] = [];
+  let textNode: Element | null = null;
+  const otherElements: Element[] = [];
+
+  for (const node of children) {
+    if (node.nodeType === 1) {
+      const el = node as Element;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'cell') {
+        cells.push(el);
+      } else if (tag === 'section') {
+        const secName = el.getAttribute('N');
+        // Discard illegal/obsolete sections that break Visio XSD
+        if (secName === 'TextXForm' || secName === 'TextBlock' || secName === 'Text' || secName === 'Protection') {
+          continue;
+        }
+        sections.push(el);
+      } else if (tag === 'text') {
+        textNode = el;
+      } else {
+        otherElements.push(el);
+      }
+    }
+    // Detach from shape
+    shape.removeChild(node);
+  }
+
+  // 1. BLOQUE 1: Todas las etiquetas <Cell> al inicio
+  for (const c of cells) {
+    shape.appendChild(c);
+  }
+
+  // 2. BLOQUE 2: Todas las etiquetas <Section>
+  for (const s of sections) {
+    shape.appendChild(s);
+  }
+
+  // 3. Otros elementos estructurales (ej. <Shapes> en grupos)
+  for (const o of otherElements) {
+    shape.appendChild(o);
+  }
+
+  // 4. BLOQUE 3: <Text> SIEMPRE AL FINAL
+  if (textNode) {
+    shape.appendChild(textNode);
+  }
 }
 
 /**
@@ -98,7 +146,7 @@ function setOrUpdateDirectShapeCell(
  * 1) Only visio/pages/page*.xml are touched; all other ZIP entries remain intact.
  * 2) Strict 'application/xml' DOM parsing and validation.
  * 3) NEVER create <Section N="TextXForm"> or <Section N="TextBlock"> (they don't exist in Visio XSD).
- * 4) All direct child <Cell> elements MUST precede <Section>, <Text>, <ForeignData>, <Shapes>.
+ * 4) All direct child <Cell> elements MUST precede <Section> and <Text>.
  * 5) 1D connectors (BeginX / EndX) are strictly skipped.
  */
 export async function patchVsdx(
@@ -151,12 +199,11 @@ export async function patchVsdx(
     totalShapes += shapes.length;
 
     for (const shape of shapes) {
-      // Rule 3: Clean up any illegal sections (<Section N="TextXForm">, <Section N="TextBlock">, <Section N="Text">, <Section N="Protection">) on ALL shapes
+      // Rule 3: Count and strip illegal sections on ALL shapes
       const directSections = getDirectChildrenByTag(shape, 'Section');
       for (const sec of directSections) {
         const secName = sec.getAttribute('N');
         if (secName === 'TextXForm' || secName === 'TextBlock' || secName === 'Text' || secName === 'Protection') {
-          shape.removeChild(sec);
           invalidSectionsRemoved++;
         }
       }
@@ -172,16 +219,15 @@ export async function patchVsdx(
 
       if (is1DConnector) {
         shapesSkipped1D++;
+        reorderShapeChildrenStrict(shape);
         continue;
       }
 
       // Check if shape has own text content
       const textNode = findFirstElementByTag(shape, 'Text');
-      if (!textNode) {
-        continue;
-      }
-      const textContent = (textNode.textContent || '').trim();
-      if (!textContent) {
+      const textContent = textNode ? (textNode.textContent || '').trim() : '';
+      if (!textNode || !textContent) {
+        reorderShapeChildrenStrict(shape);
         continue;
       }
 
@@ -193,36 +239,33 @@ export async function patchVsdx(
       const heightVal = heightCell ? parseFloat(heightCell.getAttribute('V') || '') : NaN;
 
       if (isNaN(widthVal) || isNaN(heightVal) || widthVal <= 0 || heightVal <= 0) {
-        // Skip invalid or zero dimension shapes
+        reorderShapeChildrenStrict(shape);
         continue;
       }
 
-      // Rule 4 & Specification 2.b: Create or update direct child <Cell> elements of <Shape>
-      // Strict position: inserted BEFORE the first <Section> or <Text>
+      // Rule 4 & Specification 2: Inject text cells in BLOQUE 1
       if (options.fixTextXForm || options.adjustTextBoxesAndRotations) {
-        const wStr = widthVal.toFixed(6);
-        const hStr = heightVal.toFixed(6);
-        const halfW = (widthVal * 0.5).toFixed(6);
-        const halfH = (heightVal * 0.5).toFixed(6);
+        const halfW = widthVal * 0.5;
+        const halfH = heightVal * 0.5;
 
-        // Required text transform cells:
-        setOrUpdateDirectShapeCell(doc, shape, 'TxtWidth', wStr, 'Width*1');
-        setOrUpdateDirectShapeCell(doc, shape, 'TxtHeight', hStr, 'Height*1');
-        setOrUpdateDirectShapeCell(doc, shape, 'TxtPinX', halfW, 'Width*0.5');
-        setOrUpdateDirectShapeCell(doc, shape, 'TxtPinY', halfH, 'Height*0.5');
-        setOrUpdateDirectShapeCell(doc, shape, 'TxtLocPinX', halfW, 'TxtWidth*0.5');
-        setOrUpdateDirectShapeCell(doc, shape, 'TxtLocPinY', halfH, 'TxtHeight*0.5');
-        setOrUpdateDirectShapeCell(doc, shape, 'LockTextEdit', '0');
-        setOrUpdateDirectShapeCell(doc, shape, 'TopMargin', '0', undefined, 'PT');
-        setOrUpdateDirectShapeCell(doc, shape, 'BottomMargin', '0', undefined, 'PT');
-        setOrUpdateDirectShapeCell(doc, shape, 'LeftMargin', '0', undefined, 'PT');
-        setOrUpdateDirectShapeCell(doc, shape, 'RightMargin', '0', undefined, 'PT');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtPinX', safeNum(halfW), 'Width*0.5');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtPinY', safeNum(halfH), 'Height*0.5');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtWidth', safeNum(widthVal, 0.01), 'Width*1');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtHeight', safeNum(heightVal, 0.01), 'Height*1');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtLocPinX', safeNum(halfW), 'TxtWidth*0.5');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtLocPinY', safeNum(halfH), 'TxtHeight*0.5');
+        setOrUpdateDirectShapeCell(doc, shape, 'TxtAngle', '0');
+        setOrUpdateDirectShapeCell(doc, shape, 'LeftMargin', '0');
+        setOrUpdateDirectShapeCell(doc, shape, 'RightMargin', '0');
+        setOrUpdateDirectShapeCell(doc, shape, 'TopMargin', '0');
+        setOrUpdateDirectShapeCell(doc, shape, 'BottomMargin', '0');
         setOrUpdateDirectShapeCell(doc, shape, 'VerticalAlign', '1');
+        setOrUpdateDirectShapeCell(doc, shape, 'LockTextEdit', '0');
 
         textBlocksFixed++;
       }
 
-      // Specification 2.c: Small height handling (Height < 0.25 inches)
+      // Small height handling (Height < 0.25 inches)
       if (heightVal < 0.25) {
         const paraSec = directSections.find(s => s.getAttribute('N') === 'Paragraph');
         if (paraSec) {
@@ -259,6 +302,9 @@ export async function patchVsdx(
           }
         }
       }
+
+      // Reorder all children of this shape into the strict 3-block sequence
+      reorderShapeChildrenStrict(shape);
     }
 
     // Write back updated page XML into ZIP (preserving all other files intact)

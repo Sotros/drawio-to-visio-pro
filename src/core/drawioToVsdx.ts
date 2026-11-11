@@ -7,6 +7,7 @@ import {
 import { sanitizeDrawio } from './drawioSanitizer';
 import { patchVsdx } from './vsdxPatcher';
 import { stencilToVisioGeometry } from './stencilParser';
+import { safeNum } from './xmlUtils';
 
 function escapeXml(str: string): string {
   if (!str) return '';
@@ -37,7 +38,7 @@ interface ShapeMapping {
 
 /**
  * Recursively sums (x, y) coordinates through all parent ancestors until parent="1" or "0".
- * In V3.0, Width and Height are preserved without swapping during rotation,
+ * Width and Height are preserved without swapping during rotation,
  * ensuring exact CAD alignment for pins and components.
  */
 export function getAbsoluteGeometry(
@@ -75,7 +76,7 @@ export function getAbsoluteGeometry(
 
 /**
  * Builds a complete, compliant Microsoft Visio OpenXML (.vsdx) package
- * Architecture V3.0 Definitive for complex CAD and electrical schematics.
+ * Architecture V4.0: Strict Visio XSD schema compliance (zero blank pages).
  */
 export async function convertDrawioToVsdx(
   xmlContent: string,
@@ -85,7 +86,7 @@ export async function convertDrawioToVsdx(
   cleanDrawioXml: string;
   report: DiagnosticReport;
 }> {
-  // Step 1: Sanitize Draw.io XML, resolve UserObjects and rescue HTML styles
+  // Step 1: Pre-clean and sanitize Draw.io XML
   const sanitized = sanitizeDrawio(xmlContent, options);
   const pages = sanitized.pages;
 
@@ -99,19 +100,14 @@ export async function convertDrawioToVsdx(
   let totalOrthogonalConnectors = 0;
   let totalTextBlocksFixed = 0;
   let totalNestedResolved = 0;
-  let totalStencilsDecoded = sanitized.report.stencilsDecoded || 0;
-  let totalImagesEmbedded = 0;
+  const totalStencilsDecoded = sanitized.report.stencilsDecoded || 0;
   let totalGhostBordersCleared = 0;
   let totalHairlinesPreserved = 0;
 
   const warnings: string[] = [...(sanitized.report.warnings || [])];
   const logs: string[] = [...(sanitized.report.logs || [])];
 
-  logs.push(`[V3.0] Iniciando construcción OpenXML para planos eléctricos de ${pages.length} página(s)...`);
-
-  // Media files registry for images
-  let globalImageCounter = 1;
-  const imageExtensions = new Set<string>(['png', 'jpg', 'jpeg', 'gif', 'bmp']);
+  logs.push(`[V4.0] Iniciando construcción OpenXML para planos eléctricos de ${pages.length} página(s)...`);
 
   // 1. Pages entries for pages.xml & relationships
   const pagesEntries: string[] = [];
@@ -121,13 +117,13 @@ export async function convertDrawioToVsdx(
     const page = pages[i];
     const pageNum = i + 1;
     const relId = `rId${pageNum}`;
-    const pWidthInches = ((page.width || 1169) / 96).toFixed(4);
-    const pHeightInches = ((page.height || 827) / 96).toFixed(4);
+    const pWidthInches = (page.width || 1169) / 96;
+    const pHeightInches = (page.height || 827) / 96;
 
-    pagesEntries.push(`  <Page ID="${i}" Name="${escapeXml(page.name)}" ViewScale="1" ViewCenterX="${(parseFloat(pWidthInches) / 2).toFixed(4)}" ViewCenterY="${(parseFloat(pHeightInches) / 2).toFixed(4)}">
+    pagesEntries.push(`  <Page ID="${i}" Name="${escapeXml(page.name)}" ViewScale="1" ViewCenterX="${safeNum(pWidthInches / 2)}" ViewCenterY="${safeNum(pHeightInches / 2)}">
     <PageSheet>
-      <Cell N="PageWidth" V="${pWidthInches}"/>
-      <Cell N="PageHeight" V="${pHeightInches}"/>
+      <Cell N="PageWidth" V="${safeNum(pWidthInches, 11)}"/>
+      <Cell N="PageHeight" V="${safeNum(pHeightInches, 8.5)}"/>
       <Cell N="PageScale" V="1"/>
       <Cell N="DrawingScale" V="1"/>
       <Cell N="DrawingSizeType" V="0"/>
@@ -152,15 +148,14 @@ export async function convertDrawioToVsdx(
     const drawioIdToVisioMap = new Map<string, ShapeMapping>();
     const shapesXmlParts: string[] = [];
     const connectsXmlParts: string[] = [];
-    const pageImageRels: string[] = [];
 
     // Separate vertices and edges
     const vertexCells = page.cells.filter(c => c.vertex && c.geometry);
     const edgeCells = page.cells.filter(c => c.edge);
 
-    // ==========================================
-    // Process Vertices (2D Shapes, Stencils, Hairlines, Images)
-    // ==========================================
+    // =========================================================================
+    // Section 1: Formas 2D (Vertices)
+    // =========================================================================
     for (const cell of vertexCells) {
       const visioId = shapeCounter++;
 
@@ -178,20 +173,20 @@ export async function convertDrawioToVsdx(
         totalNestedResolved++;
       }
 
-      const pxW = Math.max(absGeo.width, 0.5);
-      const pxH = Math.max(absGeo.height, 0.5);
+      const pxW = Math.max(1, absGeo.width);
+      const pxH = Math.max(1, absGeo.height);
       const widthIn = pxW / 96;
       const heightIn = pxH / 96;
 
-      // Invert Y axis for Visio: origin bottom-left
-      const pinX = (absGeo.x + pxW / 2) / 96;
-      const pinY = pageHeightInches - ((absGeo.y + pxH / 2) / 96);
+      const pxX = absGeo.x;
+      const pxY = absGeo.y;
+      const pinX = (pxX + pxW / 2) / 96;
+      const pinY = pageHeightInches - ((pxY + pxH / 2) / 96);
       const locPinX = widthIn / 2;
       const locPinY = heightIn / 2;
 
-      // Convert rotation: draw.io clockwise deg -> Visio counter-clockwise rad
-      const rotDeg = absGeo.rotation || 0;
-      const angleRad = -((rotDeg % 360) * Math.PI) / 180;
+      const rotationDeg = absGeo.rotation || 0;
+      const angleRad = -((rotationDeg % 360) * Math.PI) / 180;
 
       drawioIdToVisioMap.set(cell.id, {
         visioId,
@@ -200,35 +195,31 @@ export async function convertDrawioToVsdx(
         pinY,
         width: widthIn,
         height: heightIn,
-        absX: absGeo.x,
-        absY: absGeo.y
+        absX: pxX,
+        absY: pxY
       });
 
       const style = cell.parsedStyle;
-      const rawStrokeColor = style['strokeColor'] ? style['strokeColor'].trim() : '';
-      const rawFillColor = style['fillColor'] ? style['fillColor'].trim() : '';
+      const rawStrokeColor = style['strokeColor'];
+      const rawFillColor = style['fillColor'];
 
-      // ========================================================
-      // Section 4: Fill & Stroke Rules (Ghost Border Elimination)
-      // ========================================================
-      const isFillNone = rawFillColor === 'none' || (!rawFillColor && !style['shape']);
-      const isStrokeNone = rawStrokeColor === 'none' || (!rawStrokeColor && !cell.isThinLine);
-      const isDashed = style['dashed'] === '1';
+      const isStrokeNone = !rawStrokeColor || rawStrokeColor === 'none';
+      const isFillNone = !rawFillColor || rawFillColor === 'none';
 
       if (isStrokeNone) {
         totalGhostBordersCleared++;
       }
 
-      let strokeColorHex = '#000000';
-      let strokeWidthIn = '0.007'; // default hairline ~0.5pt
+      const strokeColorHex = parseHexColor(rawStrokeColor, '#000000');
+      const isDashed = style['dashed'] === '1';
 
+      let strokeWidthIn = '0.0104';
       if (!isStrokeNone) {
-        strokeColorHex = parseHexColor(rawStrokeColor, '#000000');
-        const swVal = style['strokeWidth'];
-        if (swVal && parseFloat(swVal) > 0) {
-          strokeWidthIn = (parseFloat(swVal) / 72).toFixed(6);
+        const rawW = style['strokeWidth'];
+        if (rawW && rawW !== '0') {
+          const pt = parseFloat(rawW);
+          strokeWidthIn = safeNum(pt / 72, 0.0104);
         } else {
-          // Hairline CAD (strokeWidth is "0" or not defined, but strokeColor is valid)
           strokeWidthIn = '0.007';
           totalHairlinesPreserved++;
         }
@@ -236,135 +227,62 @@ export async function convertDrawioToVsdx(
 
       const fillColorHex = parseHexColor(rawFillColor, '#FFFFFF');
 
-      // Embedded Base64 Image (V3.0: supports with and without ';base64')
-      let foreignCellsXml = '';
-      let foreignDataXml = '';
-      let isForeignType = false;
-
-      if (cell.isBase64Image && cell.imageData && options.convertStencilsAndImages) {
-        const imgNum = globalImageCounter++;
-        const ext = cell.imageData.extension;
-        imageExtensions.add(ext);
-        const imgPath = `visio/media/image${imgNum}.${ext}`;
-
-        try {
-          const binaryStr = atob(cell.imageData.base64);
-          const bytes = new Uint8Array(binaryStr.length);
-          for (let b = 0; b < binaryStr.length; b++) {
-            bytes[b] = binaryStr.charCodeAt(b);
-          }
-          zip.file(imgPath, bytes);
-
-          const rId = `rIdImg${imgNum}`;
-          pageImageRels.push(
-            `  <Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${imgNum}.${ext}"/>`
-          );
-
-          isForeignType = true;
-          foreignCellsXml = `
-      <Cell N="ImgOffsetX" V="0"/>
-      <Cell N="ImgOffsetY" V="0"/>
-      <Cell N="ImgWidth" V="${widthIn.toFixed(4)}" F="Width*1"/>
-      <Cell N="ImgHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>`;
-          foreignDataXml = `
-      <ForeignData ForeignType="Bitmap" CompressionType="${ext === 'png' ? 'PNG' : 'JPEG'}">
-        <Rel r:id="${rId}"/>
-      </ForeignData>`;
-          totalImagesEmbedded++;
-        } catch {
-          warnings.push(`No se pudo decodificar la imagen Base64 de la celda ${cell.id}.`);
-        }
-      }
-
-      // ==========================================
-      // Geometry construction
-      // ==========================================
-      let geometryXml = '';
-
-      if (isStrokeNone && isFillNone && !isForeignType) {
-        // Pure text bounding box or transparent container (e.g. UzV2 stencil)
-        geometryXml = `
-      <Section N="Geometry" IX="0">
-        <Cell N="NoFill" V="1"/>
-        <Cell N="NoLine" V="1"/>
-      </Section>`;
+      // Geometry construction (pure 2D vector geometry)
+      let geometryRows = '';
+      if (isStrokeNone && isFillNone) {
+        // Pure text bounding box or transparent container
+        geometryRows = '';
       } else if (cell.isThinLine && !isStrokeNone) {
-        // Title block divider line (width <= 2px or height <= 2px)
+        // Divider hairline
         if (pxW >= pxH) {
-          // Horizontal line
-          geometryXml = `
-      <Section N="Geometry" IX="0">
-        <Cell N="NoFill" V="1"/>
-        <Cell N="NoLine" V="0"/>
-        <Row T="MoveTo" IX="1"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="${locPinY.toFixed(4)}" F="Height*0.5"/></Row>
-        <Row T="LineTo" IX="2"><Cell N="X" V="${widthIn.toFixed(4)}" F="Width*1"/><Cell N="Y" V="${locPinY.toFixed(4)}" F="Height*0.5"/></Row>
-      </Section>`;
+          geometryRows = `        <Row T="MoveTo" IX="1"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="${safeNum(locPinY)}" F="Height*0.5"/></Row>
+        <Row T="LineTo" IX="2"><Cell N="X" V="${safeNum(widthIn, 0.01)}" F="Width*1"/><Cell N="Y" V="${safeNum(locPinY)}" F="Height*0.5"/></Row>`;
         } else {
-          // Vertical line
-          geometryXml = `
-      <Section N="Geometry" IX="0">
-        <Cell N="NoFill" V="1"/>
-        <Cell N="NoLine" V="0"/>
-        <Row T="MoveTo" IX="1"><Cell N="X" V="${locPinX.toFixed(4)}" F="Width*0.5"/><Cell N="Y" V="0" F="Height*0"/></Row>
-        <Row T="LineTo" IX="2"><Cell N="X" V="${locPinX.toFixed(4)}" F="Width*0.5"/><Cell N="Y" V="${heightIn.toFixed(4)}" F="Height*1"/></Row>
-      </Section>`;
+          geometryRows = `        <Row T="MoveTo" IX="1"><Cell N="X" V="${safeNum(locPinX)}" F="Width*0.5"/><Cell N="Y" V="0" F="Height*0"/></Row>
+        <Row T="LineTo" IX="2"><Cell N="X" V="${safeNum(locPinX)}" F="Width*0.5"/><Cell N="Y" V="${safeNum(heightIn, 0.01)}" F="Height*1"/></Row>`;
         }
       } else if (cell.isStencil && cell.stencilDef) {
-        geometryXml = stencilToVisioGeometry(cell.stencilDef, widthIn, heightIn);
+        // Stencil definition
+        const stencilXml = stencilToVisioGeometry(cell.stencilDef, widthIn, heightIn);
+        // Extract rows from stencilXml
+        const match = stencilXml.match(/<Section N="Geometry" IX="0">([\s\S]*?)<\/Section>/);
+        if (match) {
+          geometryRows = match[1].replace(/<Cell N="NoFill"[^>]*\/>/g, '').replace(/<Cell N="NoLine"[^>]*\/>/g, '').trim();
+        }
       } else if (style['ellipse'] === '1' || style['shape'] === 'ellipse') {
-        geometryXml = `
-      <Section N="Geometry" IX="0">
-        <Cell N="NoFill" V="${isFillNone ? '1' : '0'}"/>
-        <Cell N="NoLine" V="${isStrokeNone ? '1' : '0'}"/>
-        <Row T="Ellipse" IX="1">
-          <Cell N="X" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
-          <Cell N="Y" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
-          <Cell N="A" V="${widthIn.toFixed(4)}" F="Width*1"/>
-          <Cell N="B" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
-          <Cell N="C" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
-          <Cell N="D" V="${heightIn.toFixed(4)}" F="Height*1"/>
-        </Row>
-      </Section>`;
+        geometryRows = `        <Row T="Ellipse" IX="1">
+          <Cell N="X" V="${safeNum(locPinX)}" F="Width*0.5"/>
+          <Cell N="Y" V="${safeNum(locPinY)}" F="Height*0.5"/>
+          <Cell N="A" V="${safeNum(widthIn, 0.01)}" F="Width*1"/>
+          <Cell N="B" V="${safeNum(locPinY)}" F="Height*0.5"/>
+          <Cell N="C" V="${safeNum(locPinX)}" F="Width*0.5"/>
+          <Cell N="D" V="${safeNum(heightIn, 0.01)}" F="Height*1"/>
+        </Row>`;
       } else if (style['rhombus'] === '1' || style['shape'] === 'rhombus') {
-        geometryXml = `
-      <Section N="Geometry" IX="0">
-        <Cell N="NoFill" V="${isFillNone ? '1' : '0'}"/>
-        <Cell N="NoLine" V="${isStrokeNone ? '1' : '0'}"/>
-        <Row T="MoveTo" IX="1"><Cell N="X" V="${locPinX.toFixed(4)}" F="Width*0.5"/><Cell N="Y" V="0" F="Height*0"/></Row>
-        <Row T="LineTo" IX="2"><Cell N="X" V="${widthIn.toFixed(4)}" F="Width*1"/><Cell N="Y" V="${locPinY.toFixed(4)}" F="Height*0.5"/></Row>
-        <Row T="LineTo" IX="3"><Cell N="X" V="${locPinX.toFixed(4)}" F="Width*0.5"/><Cell N="Y" V="${heightIn.toFixed(4)}" F="Height*1"/></Row>
-        <Row T="LineTo" IX="4"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="${locPinY.toFixed(4)}" F="Height*0.5"/></Row>
-        <Row T="LineTo" IX="5"><Cell N="X" V="${locPinX.toFixed(4)}" F="Width*0.5"/><Cell N="Y" V="0" F="Height*0"/></Row>
-      </Section>`;
-      } else if (!isForeignType) {
+        geometryRows = `        <Row T="MoveTo" IX="1"><Cell N="X" V="${safeNum(locPinX)}" F="Width*0.5"/><Cell N="Y" V="0" F="Height*0"/></Row>
+        <Row T="LineTo" IX="2"><Cell N="X" V="${safeNum(widthIn, 0.01)}" F="Width*1"/><Cell N="Y" V="${safeNum(locPinY)}" F="Height*0.5"/></Row>
+        <Row T="LineTo" IX="3"><Cell N="X" V="${safeNum(locPinX)}" F="Width*0.5"/><Cell N="Y" V="${safeNum(heightIn, 0.01)}" F="Height*1"/></Row>
+        <Row T="LineTo" IX="4"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="${safeNum(locPinY)}" F="Height*0.5"/></Row>
+        <Row T="LineTo" IX="5"><Cell N="X" V="${safeNum(locPinX)}" F="Width*0.5"/><Cell N="Y" V="0" F="Height*0"/></Row>`;
+      } else {
         // Standard Rectangle
-        geometryXml = `
-      <Section N="Geometry" IX="0">
-        <Cell N="NoFill" V="${isFillNone ? '1' : '0'}"/>
-        <Cell N="NoLine" V="${isStrokeNone ? '1' : '0'}"/>
-        <Row T="MoveTo" IX="1"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="0" F="Height*0"/></Row>
-        <Row T="LineTo" IX="2"><Cell N="X" V="${widthIn.toFixed(4)}" F="Width*1"/><Cell N="Y" V="0" F="Height*0"/></Row>
-        <Row T="LineTo" IX="3"><Cell N="X" V="${widthIn.toFixed(4)}" F="Width*1"/><Cell N="Y" V="${heightIn.toFixed(4)}" F="Height*1"/></Row>
-        <Row T="LineTo" IX="4"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="${heightIn.toFixed(4)}" F="Height*1"/></Row>
-        <Row T="LineTo" IX="5"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="0" F="Height*0"/></Row>
-      </Section>`;
+        geometryRows = `        <Row T="MoveTo" IX="1"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="0" F="Height*0"/></Row>
+        <Row T="LineTo" IX="2"><Cell N="X" V="${safeNum(widthIn, 0.01)}" F="Width*1"/><Cell N="Y" V="0" F="Height*0"/></Row>
+        <Row T="LineTo" IX="3"><Cell N="X" V="${safeNum(widthIn, 0.01)}" F="Width*1"/><Cell N="Y" V="${safeNum(heightIn, 0.01)}" F="Height*1"/></Row>
+        <Row T="LineTo" IX="4"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="${safeNum(heightIn, 0.01)}" F="Height*1"/></Row>
+        <Row T="LineTo" IX="5"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="0" F="Height*0"/></Row>`;
       }
 
-      // ==========================================
-      // Text and Typography (Section 6)
-      // ==========================================
-      const hasText = cell.value && cell.value.trim().length > 0;
+      // Check text content
+      const hasText = !!cell.value && cell.value.trim().length > 0;
       let textContentXml = '';
-      let vertAlign = '1';
-      if (style['verticalAlign'] === 'top') vertAlign = '0';
-      else if (style['verticalAlign'] === 'bottom') vertAlign = '2';
+      let textCellsXml = '';
 
       if (hasText) {
         totalTextBlocksFixed++;
         const fontSizePt = cell.fontSizePt || (style['fontSize'] ? parseFloat(style['fontSize']) * 0.75 : 9);
-        const fontSizeIn = (fontSizePt / 72).toFixed(6);
+        const fontSizeIn = safeNum(fontSizePt / 72, 0.125);
 
-        // Precedence: explicit rescued fontColor -> cell fontColor -> #FFFFFF if fill is black -> #000000
         let fontColor = cell.fontColor || style['fontColor'];
         if (!fontColor) {
           fontColor = (!isFillNone && fillColorHex === '#000000') ? '#FFFFFF' : '#000000';
@@ -379,6 +297,27 @@ export async function convertDrawioToVsdx(
         if (style['align'] === 'left') horzAlign = '0';
         else if (style['align'] === 'right') horzAlign = '2';
 
+        let vertAlign = '1';
+        if (style['verticalAlign'] === 'top') vertAlign = '0';
+        else if (style['verticalAlign'] === 'bottom') vertAlign = '2';
+
+        // BLOQUE 1 Text cells
+        textCellsXml = `
+      <Cell N="TxtPinX" V="${safeNum(locPinX)}" F="Width*0.5"/>
+      <Cell N="TxtPinY" V="${safeNum(locPinY)}" F="Height*0.5"/>
+      <Cell N="TxtWidth" V="${safeNum(widthIn, 0.01)}" F="Width*1"/>
+      <Cell N="TxtHeight" V="${safeNum(heightIn, 0.01)}" F="Height*1"/>
+      <Cell N="TxtLocPinX" V="${safeNum(locPinX)}" F="TxtWidth*0.5"/>
+      <Cell N="TxtLocPinY" V="${safeNum(locPinY)}" F="TxtHeight*0.5"/>
+      <Cell N="TxtAngle" V="0"/>
+      <Cell N="LeftMargin" V="0"/>
+      <Cell N="RightMargin" V="0"/>
+      <Cell N="TopMargin" V="0"/>
+      <Cell N="BottomMargin" V="0"/>
+      <Cell N="VerticalAlign" V="${vertAlign}"/>
+      <Cell N="LockTextEdit" V="0"/>`;
+
+        // BLOQUE 2 Character & Paragraph sections
         textContentXml = `
       <Section N="Character">
         <Row IX="0">
@@ -392,45 +331,34 @@ export async function convertDrawioToVsdx(
         <Row IX="0">
           <Cell N="HorzAlign" V="${horzAlign}"/>
         </Row>
-      </Section>
-      <Text><cp IX="0"/><pp IX="0"/>${escapeXml(cell.value)}</Text>`;
+      </Section>`;
       }
 
-      const shapeTypeAttr = isForeignType ? 'Type="Foreign"' : 'Type="Shape"';
+      // Geometry Section in BLOQUE 2
+      const geometrySectionXml = `
+      <Section N="Geometry" IX="0">
+        <Cell N="NoFill" V="${isFillNone ? '1' : '0'}"/>
+        <Cell N="NoLine" V="${isStrokeNone ? '1' : '0'}"/>
+${geometryRows}
+      </Section>`;
 
-      // Strict Visio OpenXML: all <Cell> direct children MUST precede any <Section>, <Text>, or <ForeignData>
-      const shapeXml = `    <Shape ID="${visioId}" ${shapeTypeAttr} LineStyle="3" FillStyle="3" TextStyle="3">
-      <Cell N="PinX" V="${pinX.toFixed(4)}"/>
-      <Cell N="PinY" V="${pinY.toFixed(4)}"/>
-      <Cell N="Width" V="${widthIn.toFixed(4)}"/>
-      <Cell N="Height" V="${heightIn.toFixed(4)}"/>
-      <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
-      <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
-      <Cell N="Angle" V="${angleRad.toFixed(6)}"/>
-      <Cell N="FlipX" V="${cell.flipH ? '1' : '0'}"/>
-      <Cell N="FlipY" V="${cell.flipV ? '1' : '0'}"/>
-      <Cell N="TxtWidth" V="${widthIn.toFixed(4)}" F="Width*1"/>
-      <Cell N="TxtHeight" V="${heightIn.toFixed(4)}" F="Height*1"/>
-      <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
-      <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
-      <Cell N="TxtLocPinX" V="${locPinX.toFixed(4)}" F="TxtWidth*0.5"/>
-      <Cell N="TxtLocPinY" V="${locPinY.toFixed(4)}" F="TxtHeight*0.5"/>
-      <Cell N="LockTextEdit" V="0"/>
-      <Cell N="TopMargin" V="0" U="PT"/>
-      <Cell N="BottomMargin" V="0" U="PT"/>
-      <Cell N="LeftMargin" V="0" U="PT"/>
-      <Cell N="RightMargin" V="0" U="PT"/>
-      <Cell N="VerticalAlign" V="${vertAlign}"/>${foreignCellsXml}
-      <Section N="Line">
-        <Cell N="LineColor" V="${strokeColorHex}"/>
-        <Cell N="LineWeight" V="${strokeWidthIn}"/>
-        <Cell N="LinePattern" V="${isStrokeNone ? '0' : (isDashed ? '2' : '1')}"/>
-        <Cell N="Rounding" V="${style['rounded'] === '1' ? '0.05' : '0'}"/>
-      </Section>
-      <Section N="Fill">
-        <Cell N="FillForegnd" V="${fillColorHex}"/>
-        <Cell N="FillPattern" V="${isFillNone ? '0' : '1'}"/>
-      </Section>${geometryXml}${foreignDataXml}${textContentXml}
+      // STRICT XSD SCHEMA: 3 BLOQUES ORDENADOS
+      const shapeXml = `    <Shape ID="${visioId}" Type="Shape" LineStyle="3" FillStyle="3" TextStyle="3">
+      <!-- BLOQUE 1: Todas las etiquetas Cell directas -->
+      <Cell N="PinX" V="${safeNum(pinX)}"/>
+      <Cell N="PinY" V="${safeNum(pinY)}"/>
+      <Cell N="Width" V="${safeNum(widthIn, 0.01)}"/>
+      <Cell N="Height" V="${safeNum(heightIn, 0.01)}"/>
+      <Cell N="LocPinX" V="${safeNum(locPinX)}"/>
+      <Cell N="LocPinY" V="${safeNum(locPinY)}"/>
+      <Cell N="Angle" V="${safeNum(angleRad)}"/>${cell.flipH ? '\n      <Cell N="FlipX" V="1"/>' : ''}${cell.flipV ? '\n      <Cell N="FlipY" V="1"/>' : ''}
+      <Cell N="LineWeight" V="${strokeWidthIn}"/>
+      <Cell N="LineColor" V="${strokeColorHex}"/>
+      <Cell N="LinePattern" V="${isStrokeNone ? '0' : (isDashed ? '2' : '1')}"/>
+      <Cell N="FillForegnd" V="${fillColorHex}"/>
+      <Cell N="FillPattern" V="${isFillNone ? '0' : '1'}"/>${textCellsXml}
+      <!-- BLOQUE 2: Todas las etiquetas Section directas -->${textContentXml}${geometrySectionXml}
+      <!-- BLOQUE 3: Etiqueta Text SIEMPRE AL FINAL DEL SHAPE -->${hasText ? `\n      <Text><cp IX="0"/><pp IX="0"/>${escapeXml(cell.value)}</Text>` : ''}
     </Shape>`;
 
       shapesXmlParts.push(shapeXml);
@@ -438,77 +366,63 @@ export async function convertDrawioToVsdx(
     }
 
     // =========================================================================
-    // Section 3: Conectores Ortogonales como Polilíneas 2D (Sin Distorsión 1D)
+    // Section 2: Conectores Ortogonales como Polilíneas 2D (Sin Distorsión 1D)
     // =========================================================================
     for (const cell of edgeCells) {
       const visioId = shapeCounter++;
 
-      let startPxX = 0;
-      let startPxY = 0;
-      let endPxX = 100;
-      let endPxY = 100;
+      const geo = cell.geometry;
+      if (!geo) continue;
 
-      const sourceMapped = cell.source ? drawioIdToVisioMap.get(cell.source) : undefined;
-      const targetMapped = cell.target ? drawioIdToVisioMap.get(cell.target) : undefined;
+      let visioPoints: Array<{ x: number; y: number }> = [];
 
-      // 1. Calculate anchor-exact start point
-      if (sourceMapped) {
-        const exitX = cell.exitX !== undefined ? cell.exitX : (cell.geometry?.sourcePoint ? (cell.geometry.sourcePoint.x / (sourceMapped.width * 96)) : 0.5);
-        const exitY = cell.exitY !== undefined ? cell.exitY : (cell.geometry?.sourcePoint ? (cell.geometry.sourcePoint.y / (sourceMapped.height * 96)) : 0.5);
-        startPxX = sourceMapped.absX + exitX * (sourceMapped.width * 96);
-        startPxY = sourceMapped.absY + exitY * (sourceMapped.height * 96);
-      } else if (cell.geometry?.sourcePoint) {
-        startPxX = cell.geometry.sourcePoint.x;
-        startPxY = cell.geometry.sourcePoint.y;
+      let rawSrcX = 0;
+      let rawSrcY = 0;
+      let rawTgtX = 0;
+      let rawTgtY = 0;
+
+      if (cell.source && drawioIdToVisioMap.has(cell.source)) {
+        const srcMap = drawioIdToVisioMap.get(cell.source)!;
+        const exitX = cell.exitX !== undefined ? cell.exitX : 0.5;
+        const exitY = cell.exitY !== undefined ? cell.exitY : 0.5;
+        rawSrcX = srcMap.absX + srcMap.cell.geometry!.width * exitX;
+        rawSrcY = srcMap.absY + srcMap.cell.geometry!.height * exitY;
+      } else if (geo.sourcePoint) {
+        rawSrcX = geo.sourcePoint.x;
+        rawSrcY = geo.sourcePoint.y;
       }
 
-      // 2. Calculate anchor-exact end point
-      if (targetMapped) {
-        const entryX = cell.entryX !== undefined ? cell.entryX : (cell.geometry?.targetPoint ? (cell.geometry.targetPoint.x / (targetMapped.width * 96)) : 0.5);
-        const entryY = cell.entryY !== undefined ? cell.entryY : (cell.geometry?.targetPoint ? (cell.geometry.targetPoint.y / (targetMapped.height * 96)) : 0.5);
-        endPxX = targetMapped.absX + entryX * (targetMapped.width * 96);
-        endPxY = targetMapped.absY + entryY * (targetMapped.height * 96);
-      } else if (cell.geometry?.targetPoint) {
-        endPxX = cell.geometry.targetPoint.x;
-        endPxY = cell.geometry.targetPoint.y;
+      if (cell.target && drawioIdToVisioMap.has(cell.target)) {
+        const tgtMap = drawioIdToVisioMap.get(cell.target)!;
+        const entryX = cell.entryX !== undefined ? cell.entryX : 0.5;
+        const entryY = cell.entryY !== undefined ? cell.entryY : 0.5;
+        rawTgtX = tgtMap.absX + tgtMap.cell.geometry!.width * entryX;
+        rawTgtY = tgtMap.absY + tgtMap.cell.geometry!.height * entryY;
+      } else if (geo.targetPoint) {
+        rawTgtX = geo.targetPoint.x;
+        rawTgtY = geo.targetPoint.y;
       }
 
-      // 3. Collect polyline points: [Start, ...Waypoints, End]
-      const rawPoints: Array<{ x: number; y: number }> = [{ x: startPxX, y: startPxY }];
+      visioPoints.push({
+        x: rawSrcX / 96,
+        y: pageHeightInches - rawSrcY / 96
+      });
 
-      if (cell.geometry?.points && cell.geometry.points.length > 0) {
-        for (const pt of cell.geometry.points) {
-          rawPoints.push({ x: pt.x, y: pt.y });
+      if (geo.points && geo.points.length > 0 && options.routeOrthogonalConnectors) {
+        totalOrthogonalConnectors++;
+        for (const pt of geo.points) {
+          visioPoints.push({
+            x: pt.x / 96,
+            y: pageHeightInches - pt.y / 96
+          });
         }
       }
-      rawPoints.push({ x: endPxX, y: endPxY });
 
-      // 4. Ensure orthogonal 90-degree elbows if diagonal segments exist
-      const isOrthogonal = cell.style.includes('orthogonalEdgeStyle') || options.routeOrthogonalConnectors;
-      const polylinePoints: Array<{ x: number; y: number }> = [];
+      visioPoints.push({
+        x: rawTgtX / 96,
+        y: pageHeightInches - rawTgtY / 96
+      });
 
-      for (let i = 0; i < rawPoints.length - 1; i++) {
-        const p1 = rawPoints[i];
-        const p2 = rawPoints[i + 1];
-        polylinePoints.push(p1);
-
-        if (isOrthogonal && Math.abs(p1.x - p2.x) > 1 && Math.abs(p1.y - p2.y) > 1) {
-          totalOrthogonalConnectors++;
-          // Insert 90-degree elbow at midpoint
-          const midX = (p1.x + p2.x) / 2;
-          polylinePoints.push({ x: midX, y: p1.y });
-          polylinePoints.push({ x: midX, y: p2.y });
-        }
-      }
-      polylinePoints.push(rawPoints[rawPoints.length - 1]);
-
-      // 5. Convert all vertices to Visio inches and invert Y
-      const visioPoints = polylinePoints.map(p => ({
-        x: p.x / 96,
-        y: pageHeightInches - (p.y / 96)
-      }));
-
-      // 6. Calculate Bounding Box for 2D Unrotated Shape
       const allX = visioPoints.map(p => p.x);
       const allY = visioPoints.map(p => p.y);
       const minX = Math.min(...allX);
@@ -526,117 +440,109 @@ export async function convertDrawioToVsdx(
       const style = cell.parsedStyle;
       const strokeColor = parseHexColor(style['strokeColor'], '#000000');
       const strokeWidthPt = parseFloat(style['strokeWidth'] || '1.5');
-      const strokeWidthIn = (strokeWidthPt / 72).toFixed(6);
+      const strokeWidthIn = safeNum(strokeWidthPt / 72, 0.0104);
       const isDashed = style['dashed'] === '1';
-      const hasEndArrow = style['endArrow'] !== 'none';
 
-      // 7. Generate 2D geometry rows in local unrotated coordinates (Angle = 0)
+      // 2D geometry rows in local unrotated coordinates (Angle = 0)
       const geomRows: string[] = [];
       const firstPt = visioPoints[0];
       geomRows.push(`        <Row T="MoveTo" IX="1">
-          <Cell N="X" V="${(firstPt.x - minX).toFixed(4)}"/>
-          <Cell N="Y" V="${(firstPt.y - minY).toFixed(4)}"/>
+          <Cell N="X" V="${safeNum(firstPt.x - minX)}"/>
+          <Cell N="Y" V="${safeNum(firstPt.y - minY)}"/>
         </Row>`);
 
       for (let i = 1; i < visioPoints.length; i++) {
         const pt = visioPoints[i];
         geomRows.push(`        <Row T="LineTo" IX="${i + 1}">
-          <Cell N="X" V="${(pt.x - minX).toFixed(4)}"/>
-          <Cell N="Y" V="${(pt.y - minY).toFixed(4)}"/>
+          <Cell N="X" V="${safeNum(pt.x - minX)}"/>
+          <Cell N="Y" V="${safeNum(pt.y - minY)}"/>
         </Row>`);
       }
 
-      // Conector 2D puro sin XForm1D: nunca rota sobre la diagonal
-      const edgeShapeXml = `    <Shape ID="${visioId}" Type="Shape" LineStyle="3" TextStyle="3">
-      <Cell N="PinX" V="${pinX.toFixed(4)}"/>
-      <Cell N="PinY" V="${pinY.toFixed(4)}"/>
-      <Cell N="Width" V="${widthIn.toFixed(4)}"/>
-      <Cell N="Height" V="${heightIn.toFixed(4)}"/>
-      <Cell N="LocPinX" V="${locPinX.toFixed(4)}"/>
-      <Cell N="LocPinY" V="${locPinY.toFixed(4)}"/>
-      <Cell N="Angle" V="0"/>${cell.value ? `
-      <Cell N="TxtPinX" V="${locPinX.toFixed(4)}" F="Width*0.5"/>
-      <Cell N="TxtPinY" V="${locPinY.toFixed(4)}" F="Height*0.5"/>
-      <Cell N="TxtWidth" V="${Math.min(widthIn, 1.5).toFixed(4)}"/>
-      <Cell N="TxtHeight" V="0.3"/>
-      <Cell N="TxtLocPinX" V="${(Math.min(widthIn, 1.5) / 2).toFixed(4)}" F="TxtWidth*0.5"/>
+      const edgeHasText = !!cell.value && cell.value.trim().length > 0;
+      let edgeTextCellsXml = '';
+      let edgeTextSectionXml = '';
+
+      if (edgeHasText) {
+        edgeTextCellsXml = `
+      <Cell N="TxtPinX" V="${safeNum(locPinX)}" F="Width*0.5"/>
+      <Cell N="TxtPinY" V="${safeNum(locPinY)}" F="Height*0.5"/>
+      <Cell N="TxtWidth" V="${safeNum(Math.min(widthIn, 1.5), 0.5)}" F="Width*1"/>
+      <Cell N="TxtHeight" V="0.3" F="Height*1"/>
+      <Cell N="TxtLocPinX" V="${safeNum(Math.min(widthIn, 1.5) / 2)}" F="TxtWidth*0.5"/>
       <Cell N="TxtLocPinY" V="0.15" F="TxtHeight*0.5"/>
       <Cell N="TxtAngle" V="0"/>
-      <Cell N="TopMargin" V="0" U="PT"/>
-      <Cell N="BottomMargin" V="0" U="PT"/>
-      <Cell N="LeftMargin" V="0" U="PT"/>
-      <Cell N="RightMargin" V="0" U="PT"/>` : ''}
-      <Section N="Line">
-        <Cell N="LineColor" V="${strokeColor}"/>
-        <Cell N="LineWeight" V="${strokeWidthIn}"/>
-        <Cell N="LinePattern" V="${isDashed ? '2' : '1'}"/>
-        <Cell N="EndArrow" V="${hasEndArrow ? '4' : '0'}"/>
-      </Section>
-      <Section N="Fill">
-        <Cell N="FillPattern" V="0"/>
-      </Section>
-      <Section N="Geometry" IX="0">
-        <Cell N="NoFill" V="1"/>
-        <Cell N="NoLine" V="0"/>
-${geomRows.join('\n')}
-      </Section>${cell.value ? `
+      <Cell N="LeftMargin" V="0"/>
+      <Cell N="RightMargin" V="0"/>
+      <Cell N="TopMargin" V="0"/>
+      <Cell N="BottomMargin" V="0"/>
+      <Cell N="VerticalAlign" V="1"/>
+      <Cell N="LockTextEdit" V="0"/>`;
+
+        edgeTextSectionXml = `
       <Section N="Character">
         <Row IX="0">
           <Cell N="Font" V="Calibri"/>
           <Cell N="Size" V="0.125" unit="PT"/>
           <Cell N="Color" V="${strokeColor}"/>
+          <Cell N="Style" V="0"/>
         </Row>
       </Section>
-      <Text><cp IX="0"/>${escapeXml(cell.value)}</Text>` : ''}
+      <Section N="Paragraph">
+        <Row IX="0">
+          <Cell N="HorzAlign" V="1"/>
+        </Row>
+      </Section>`;
+      }
+
+      const edgeShapeXml = `    <Shape ID="${visioId}" Type="Shape" LineStyle="3" TextStyle="3">
+      <!-- BLOQUE 1: Celdas directas del conector -->
+      <Cell N="PinX" V="${safeNum(pinX)}"/>
+      <Cell N="PinY" V="${safeNum(pinY)}"/>
+      <Cell N="Width" V="${safeNum(widthIn, 0.005)}"/>
+      <Cell N="Height" V="${safeNum(heightIn, 0.005)}"/>
+      <Cell N="LocPinX" V="${safeNum(locPinX)}"/>
+      <Cell N="LocPinY" V="${safeNum(locPinY)}"/>
+      <Cell N="Angle" V="0"/>
+      <Cell N="LineWeight" V="${strokeWidthIn}"/>
+      <Cell N="LineColor" V="${strokeColor}"/>
+      <Cell N="LinePattern" V="${isDashed ? '2' : '1'}"/>
+      <Cell N="FillForegnd" V="#000000"/>
+      <Cell N="FillPattern" V="0"/>${edgeTextCellsXml}
+      <!-- BLOQUE 2: Secciones del conector -->${edgeTextSectionXml}
+      <Section N="Geometry" IX="0">
+        <Cell N="NoFill" V="1"/>
+        <Cell N="NoLine" V="0"/>
+${geomRows.join('\n')}
+      </Section>
+      <!-- BLOQUE 3: Text siempre al final -->${edgeHasText ? `\n      <Text><cp IX="0"/><pp IX="0"/>${escapeXml(cell.value)}</Text>` : ''}
     </Shape>`;
 
       shapesXmlParts.push(edgeShapeXml);
       totalConnectors++;
-
-      // Register dynamic connects in <Connects>
-      if (sourceMapped) {
-        connectsXmlParts.push(`    <Connect FromSheet="${visioId}" FromCell="PinX" FromPart="3" ToSheet="${sourceMapped.visioId}" ToCell="PinX" ToPart="3"/>`);
-      }
-      if (targetMapped) {
-        connectsXmlParts.push(`    <Connect FromSheet="${visioId}" FromCell="PinX" FromPart="3" ToSheet="${targetMapped.visioId}" ToCell="PinX" ToPart="3"/>`);
-      }
     }
 
+    // Connects XML
+    const connectsXml = connectsXmlParts.length > 0
+      ? `\n    <Connects>\n${connectsXmlParts.join('\n')}\n    </Connects>`
+      : '';
+
+    // Final page XML (Clean schema)
     const pageXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <PageContents xmlns="http://schemas.microsoft.com/office/visio/2012/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <Shapes>
 ${shapesXmlParts.join('\n')}
-  </Shapes>
-  <Connects>
-${connectsXmlParts.join('\n')}
-  </Connects>
+  </Shapes>${connectsXml}
 </PageContents>`;
 
     zip.file(`visio/pages/page${pageNum}.xml`, pageXml);
-
-    if (pageImageRels.length > 0) {
-      const pageRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-${pageImageRels.join('\n')}
-</Relationships>`;
-      zip.file(`visio/pages/_rels/page${pageNum}.xml.rels`, pageRelsXml);
-    }
   }
 
-  // 3. [Content_Types].xml with image extensions
-  const imageTypesEntries = Array.from(imageExtensions).map(ext => {
-    let mime = 'image/png';
-    if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg';
-    else if (ext === 'gif') mime = 'image/gif';
-    else if (ext === 'bmp') mime = 'image/bmp';
-    return `  <Default Extension="${ext}" ContentType="${mime}"/>`;
-  }).join('\n');
-
+  // 3. Clean [Content_Types].xml (Strict XSD standard without extra media extensions)
   const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
-${imageTypesEntries}
   <Override PartName="/visio/document.xml" ContentType="application/vnd.ms-visio.drawing.main+xml"/>
   <Override PartName="/visio/pages/pages.xml" ContentType="application/vnd.ms-visio.pages+xml"/>
   <Override PartName="/visio/windows.xml" ContentType="application/vnd.ms-visio.windows+xml"/>
@@ -707,7 +613,7 @@ ${pagesRelsEntries.join('\n')}
   zip.file('visio/pages/_rels/pages.xml.rels', pagesRelsXml);
 
   // Generate initial VSDX
-  logs.push(`Comprimiendo archivo binario .vsdx V3.0...`);
+  logs.push(`Comprimiendo archivo binario .vsdx V4.0 estricto...`);
   const initialVsdxBlob = await zip.generateAsync({
     type: 'blob',
     mimeType: 'application/vnd.ms-visio.drawing.main+xml',
@@ -715,11 +621,11 @@ ${pagesRelsEntries.join('\n')}
     compressionOptions: { level: 6 }
   });
 
-  // Step 2: Pass output through vsdxPatcher to guarantee TextXForm, margins, and lock protection
+  // Step 2: Pass output through vsdxPatcher to guarantee strict XSD compliance
   logs.push(`Aplicando control de calidad y parcheo final con VsdxPatcher...`);
   const patchedResult = await patchVsdx(initialVsdxBlob, options);
 
-  logs.push(`Conversión V3.0 finalizada con éxito.`);
+  logs.push(`Conversión V4.0 finalizada con éxito.`);
 
   const report: DiagnosticReport = {
     fileName: '',
@@ -732,7 +638,7 @@ ${pagesRelsEntries.join('\n')}
     connectorsCount: totalConnectors,
     orthogonalConnectorsCount: totalOrthogonalConnectors,
     stencilsDecoded: totalStencilsDecoded,
-    imagesEmbedded: totalImagesEmbedded,
+    imagesEmbedded: 0,
     ghostBordersCleared: totalGhostBordersCleared,
     hairlinesPreserved: totalHairlinesPreserved,
     textBlocksFixed: patchedResult.report.textBlocksFixed || totalTextBlocksFixed,
